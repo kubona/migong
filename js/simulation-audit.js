@@ -4,10 +4,9 @@ function number(value, fallback = 0) {
 }
 
 const STAGE_LABELS = {
-  offense: "进攻筛选",
-  counter: "反制搜索",
-  level: "最高等级复核",
-  recommendation: "提升建议",
+  test: "测试阶段",
+  review: "复核阶段",
+  optimize: "优化阶段",
   unknown: "未标注阶段",
 };
 
@@ -92,7 +91,7 @@ export function createSimulationAuditRecorder(options = {}) {
       repeats.set(combinationSignature, repeatIndex);
       const beganAt = Date.now();
       const base = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence,
         timestamp: new Date().toISOString(),
         monsterHrid: input?.monsterHrid || context.monsterHrid || "",
@@ -104,6 +103,7 @@ export function createSimulationAuditRecorder(options = {}) {
         stageLabel: STAGE_LABELS[context.stage || "unknown"] || context.stage || STAGE_LABELS.unknown,
         reason: context.reason || "未标注原因",
         candidateKind: context.candidateKind || "unknown",
+        planId: context.planId || null,
         searchRound: context.searchRound == null ? null : Math.max(0, Math.floor(number(context.searchRound, 0))),
         direction: context.direction || null,
         sourcePreset: context.sourcePreset || null,
@@ -156,8 +156,8 @@ export function createSimulationAuditRecorder(options = {}) {
     },
     exportPayload(extra = {}) {
       return {
-        reportType: "mwi_labyrinth_simulation_audit_v025",
-        schemaVersion: 1,
+        reportType: "mwi_labyrinth_simulation_audit_v026",
+        schemaVersion: 2,
         startedAt,
         exportedAt: new Date().toISOString(),
         ...extra,

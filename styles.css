@@ -143,19 +143,22 @@ button { min-height: 43px; padding: 0 18px; border-radius: 9px; cursor: pointer;
 .issue-list li { margin-top: 8px; padding: 11px 13px; border-left: 3px solid var(--blue); background: rgba(126,175,209,.07); color: #ced8de; line-height: 1.55; }
 .issue-list li.survivability { border-left-color: var(--red); background: rgba(225,135,120,.07); }
 .issue-list li.damage, .issue-list li.accuracy { border-left-color: var(--gold); background: var(--gold-soft); }
-.recommendations { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
-.recommendations h3 { color: #d9d5ca; font-size: 15px; }
-.recommendations ol { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0; padding: 0; list-style: none; }
-.recommendations li { padding: 13px; background: var(--gold-soft); border-radius: 9px; }
-.recommendations strong, .recommendations span { display: block; }
-.recommendations span { margin-top: 7px; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .results-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .fixed-rule-card { margin-top: 12px; padding: 12px; border: 1px solid #343832; background: #111311; }
 .fixed-rule-card h3 { margin: 0 0 10px; color: #d9d5ca; font-size: 14px; }
-.fixed-rule-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.fixed-rule-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .fixed-rule-field { color: var(--muted); font-size: 12px; }
 .fixed-rule-field span { display: block; margin-bottom: 5px; }
 .fixed-rule-field select { width: 100%; padding: 8px; border: 1px solid #454a43; border-radius: 6px; background: #171919; color: var(--ink); }
+.fixed-rule-control { display: flex !important; gap: 5px; margin: 0 !important; }
+.fixed-rule-control select { min-width: 0; }
+.fixed-remove { min-height: 0; padding: 0 8px; border: 1px solid #4b5049; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; }
+.fixed-add { margin-top: 9px; }
+.fixed-rule-note { margin: 9px 0 0; color: var(--gold); font-size: 11px; }
+.ranking-controls { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.ranking-controls > div { display: flex; gap: 6px; }
+.ranking-button { min-height: 34px; padding: 0 11px; border: 1px solid #454a43; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; }
+.ranking-button.active { border-color: var(--gold); background: var(--gold-soft); color: var(--ink); }
 .loadout-chart { margin-top: 24px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: #141614; }
 .loadout-chart-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
 .loadout-chart-heading h3 { margin: 0; color: #d9d5ca; font-size: 16px; }
@@ -182,7 +185,6 @@ footer { padding: 24px; border-top: 1px solid var(--line); color: #777a73; text-
   .monster-tabs { grid-template-columns: repeat(2, 1fr); }
   .build-grid { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
-  .recommendations ol { grid-template-columns: 1fr; }
   .choice-grid { grid-template-columns: repeat(3, 1fr); }
   .fixed-rule-grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -202,4 +204,5 @@ footer { padding: 24px; border-top: 1px solid var(--line); color: #777a73; text-
   .fixed-rule-grid { grid-template-columns: 1fr; }
   .results-actions { justify-content: flex-start; }
   .collapse-label { display: none; }
+  .ranking-controls { align-items: flex-start; flex-direction: column; }
 }

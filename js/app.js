@@ -11,7 +11,7 @@ import {
   validateClientData,
 } from "./data-model.js";
 import { CombatEngine, recommendedWorkerCount } from "./engine-adapter.js";
-import { learnedFixedAbilityChoices, sanitizeFixedAbilityRules } from "./fixed-skill-options.js";
+import { DEFAULT_FIXED_ABILITY_RULES, learnedFixedAbilityChoices, sanitizeFixedAbilityRules } from "./fixed-skill-options.js";
 import { chineseName, loadChineseTranslations } from "./localization.js";
 import { optimizeMonster } from "./optimizer.js";
 import { downloadLoadouts, officialIconMarkup, loadoutRows } from "./loadout-image.js";
@@ -26,7 +26,11 @@ const SLOT_NAMES = {
 };
 const MONSTER_NAMES = Object.fromEntries(LABYRINTH_MONSTER_HRIDS.map((hrid) => [hrid, chineseName(hrid, hrid.split("/").pop())]));
 const HAND_TYPES = new Set(["/equipment_types/main_hand", "/equipment_types/two_hand", "/equipment_types/off_hand"]);
-const EQUIPMENT_OPTIONS = [{ value: "weapon_group", label: "武器组合" }, ...[...COMBAT_EQUIPMENT_TYPES].filter((type) => !HAND_TYPES.has(type)).map((type) => ({ value: type, label: SLOT_NAMES[type] || type }))];
+const EQUIPMENT_OPTIONS = [
+  { value: "/equipment_types/main_hand", label: "主手" },
+  { value: "/equipment_types/off_hand", label: "副手" },
+  ...[...COMBAT_EQUIPMENT_TYPES].filter((type) => !HAND_TYPES.has(type)).map((type) => ({ value: type, label: SLOT_NAMES[type] || type })),
+];
 const DEFAULT_EQUIPMENT_VALUES = new Set(["/equipment_types/head", "/equipment_types/body", "/equipment_types/legs", "/equipment_types/hands", "/equipment_types/feet"]);
 const CHOICE_GROUP_IDS = { monsters: "monster-options", equipment: "equipment-options", skills: "skill-options" };
 const FIXED_RULE_CATEGORIES = [
@@ -34,18 +38,13 @@ const FIXED_RULE_CATEGORIES = [
   { key: "physical", label: "物理类" },
   { key: "mimic", label: "宝箱怪特化" },
 ];
-const DEFAULT_FIXED_RULES = {
-  magic: { aura: "", active1: "/abilities/elemental_affinity", active2: "", active3: "", active4: "__auto_zero__" },
-  physical: { aura: "", active1: "/abilities/frenzy", active2: "/abilities/berserk", active3: "", active4: "" },
-  mimic: { aura: "", active1: "", active2: "", active3: "/abilities/retribution", active4: "/abilities/spike_shell" },
-};
 const CPU_WORKER_COUNT = recommendedWorkerCount();
 const elements = Object.fromEntries([
   "bridge-status", "character-file", "client-file", "character-card", "client-card", "character-status", "client-status", "data-summary",
-  "monster-options", "equipment-options", "skill-options", "fixed-rules-status", "fixed-skill-rules", "reference-monster-level", "max-monster-level", "trials-per-plan",
+  "monster-options", "equipment-options", "skill-options", "fixed-rules-status", "fixed-skill-rules", "reference-monster-level", "min-monster-level", "max-monster-level", "test-trials", "review-trials", "optimize-trials",
   "target-rate", "parallel-count", "parallel-hint", "start-button", "cancel-button", "run-status", "audit-status", "progress-track", "progress-bar", "results-section", "loadout-summary", "monster-tabs", "monster-detail", "export-button", "export-loadout-button", "export-audit-button",
 ].map((id) => [id, document.getElementById(id)]));
-const state = { character: null, catalog: null, results: [], activeMonster: 0, engines: [], monsterProgress: new Map(), abortController: null, startedAt: null, bridgeRevision: 0, fixedRules: structuredClone(DEFAULT_FIXED_RULES), auditRecorder: null };
+const state = { character: null, catalog: null, results: [], activeMonster: 0, resultSelections: new Map(), engines: [], monsterProgress: new Map(), abortController: null, startedAt: null, bridgeRevision: 0, fixedRules: structuredClone(DEFAULT_FIXED_ABILITY_RULES), auditRecorder: null };
 
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
 function percent(value, digits = 1) { return `${(Number(value || 0) * 100).toFixed(digits)}%`; }
@@ -81,7 +80,7 @@ function checkbox(id, label, checked = true, group = "") { return `<label class=
 function renderChoices() {
   elements["monster-options"].innerHTML = LABYRINTH_MONSTER_HRIDS.map((hrid) => checkbox(hrid, MONSTER_NAMES[hrid], true, "monsters")).join("");
   elements["equipment-options"].innerHTML = EQUIPMENT_OPTIONS.map((entry) => checkbox(entry.value, entry.label, DEFAULT_EQUIPMENT_VALUES.has(entry.value), "equipment")).join("");
-  elements["skill-options"].innerHTML = checkbox("aura", "特殊技能槽（含光环）", true, "skills") + [1, 2, 3, 4].map((slot) => checkbox(String(slot), `主动技能${slot}`, true, "skills")).join("");
+  elements["skill-options"].innerHTML = checkbox("aura", "特殊技能组合", true, "skills") + checkbox("active", "四个普通主动技能组合", true, "skills");
   const max = Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2));
   elements["parallel-count"].innerHTML = Array.from({ length: max }, (_, index) => `<option value="${index + 1}">${index + 1} 个怪物</option>`).join("");
   elements["parallel-count"].value = String(Math.min(2, max));
@@ -90,26 +89,45 @@ function renderChoices() {
 function abilityChoices(wantAura) {
   return learnedFixedAbilityChoices(state.catalog, state.character, wantAura);
 }
-function fixedSelect(category, key, label) {
+function fixedSelect(category, key, label, index = null) {
   const ready = Boolean(state.catalog && state.character);
-  const value = state.fixedRules[category][key];
+  const value = index == null ? state.fixedRules[category][key] : state.fixedRules[category].requiredActives[index];
   const options = ready
-    ? [`<option value="">不固定</option>`, ...(key === "active4" && category === "magic" ? [`<option value="__auto_zero__" ${value === "__auto_zero__" ? "selected" : ""}>对应元素的 0CD 主动</option>`] : []), ...abilityChoices(key === "aura").map((entry) => `<option value="${escapeHtml(entry.hrid)}" ${value === entry.hrid ? "selected" : ""}>${escapeHtml(chineseName(entry.hrid, entry.name))}</option>`)].join("")
+    ? [`<option value="">不固定</option>`, ...abilityChoices(key === "aura").map((entry) => `<option value="${escapeHtml(entry.hrid)}" ${value === entry.hrid ? "selected" : ""}>${escapeHtml(chineseName(entry.hrid, entry.name))}</option>`)].join("")
     : `<option value="">等待角色和游戏数据</option>`;
-  return `<label class="fixed-rule-field"><span>${label}</span><select data-fixed-category="${category}" data-fixed-key="${key}" ${ready ? "" : "disabled"}>${options}</select></label>`;
+  const indexAttribute = index == null ? "" : ` data-fixed-index="${index}"`;
+  const remove = index == null ? "" : `<button type="button" class="fixed-remove" data-remove-fixed="${category}" data-remove-index="${index}" aria-label="删除该必选技能">删除</button>`;
+  return `<label class="fixed-rule-field"><span>${label}</span><span class="fixed-rule-control"><select data-fixed-category="${category}" data-fixed-key="${key}"${indexAttribute} ${ready ? "" : "disabled"}>${options}</select>${remove}</span></label>`;
 }
-function renderFixedSkillRules() {
-  if (state.catalog && state.character) state.fixedRules = sanitizeFixedAbilityRules(state.fixedRules, state.catalog, state.character);
+function renderFixedSkillRules(skipSanitize = false) {
+  if (!skipSanitize && state.catalog && state.character) state.fixedRules = sanitizeFixedAbilityRules(state.fixedRules, state.catalog, state.character);
   const ready = Boolean(state.catalog && state.character);
   if (ready) {
     const auraCount = abilityChoices(true).length;
     const activeCount = abilityChoices(false).length;
-    elements["fixed-rules-status"].textContent = `已学：特殊技能 ${auraCount} 个，普通主动 ${activeCount} 个。默认：魔法元素增幅/元素0CD；物理狂速/狂暴；宝箱怪惩戒/尖刺防护。每套方案只能使用一个特殊技能。`;
+    elements["fixed-rules-status"].textContent = `已学：特殊技能 ${auraCount} 个，普通主动 ${activeCount} 个。普通主动默认全部不固定，由用户自行添加必选技能；魔法元素 0CD 始终位于主动4。`;
   } else {
     elements["fixed-rules-status"].textContent = "加载两份数据后显示已学技能。";
   }
-  elements["fixed-skill-rules"].innerHTML = FIXED_RULE_CATEGORIES.map(({ key, label }) => `<div class="fixed-rule-card"><h3>${label}</h3><div class="fixed-rule-grid">${fixedSelect(key, "aura", "特殊技能")}${[1, 2, 3, 4].map((slot) => fixedSelect(key, `active${slot}`, `主动${slot}`)).join("")}</div></div>`).join("");
-  elements["fixed-skill-rules"].querySelectorAll("select[data-fixed-category]").forEach((select) => select.addEventListener("change", () => { state.fixedRules[select.dataset.fixedCategory][select.dataset.fixedKey] = select.value; }));
+  elements["fixed-skill-rules"].innerHTML = FIXED_RULE_CATEGORIES.map(({ key, label }) => {
+    const activeRows = state.fixedRules[key].requiredActives.map((_hrid, index) => fixedSelect(key, "requiredActives", `必选主动 ${index + 1}`, index)).join("");
+    const magicNote = key === "magic" ? `<p class="fixed-rule-note">主动4：对应弱点元素的 0CD 技能（不可更改位置）</p>` : "";
+    const add = state.fixedRules[key].requiredActives.length < 4 ? `<button type="button" class="text-button fixed-add" data-add-fixed="${key}" ${ready ? "" : "disabled"}>增加必选主动</button>` : "";
+    return `<div class="fixed-rule-card"><h3>${label}</h3><div class="fixed-rule-grid">${fixedSelect(key, "aura", "必选特殊技能")}${activeRows}</div>${magicNote}${add}</div>`;
+  }).join("");
+  elements["fixed-skill-rules"].querySelectorAll("select[data-fixed-category]").forEach((select) => select.addEventListener("change", () => {
+    const category = state.fixedRules[select.dataset.fixedCategory];
+    if (select.dataset.fixedIndex == null) category[select.dataset.fixedKey] = select.value;
+    else category.requiredActives[Number(select.dataset.fixedIndex)] = select.value;
+  }));
+  elements["fixed-skill-rules"].querySelectorAll("[data-add-fixed]").forEach((button) => button.addEventListener("click", () => {
+    state.fixedRules[button.dataset.addFixed].requiredActives.push("");
+    renderFixedSkillRules(true);
+  }));
+  elements["fixed-skill-rules"].querySelectorAll("[data-remove-fixed]").forEach((button) => button.addEventListener("click", () => {
+    state.fixedRules[button.dataset.removeFixed].requiredActives.splice(Number(button.dataset.removeIndex), 1);
+    renderFixedSkillRules(true);
+  }));
 }
 function selectedValues(id) { return [...document.querySelectorAll(`#${id} input:checked`)].map((input) => input.dataset.value); }
 function installChoiceToolbar() {
@@ -127,6 +145,7 @@ function updateReadyState() {
   const coverage = compareCharacterToCatalog(state.character, state.catalog);
   const reference = resolveReferenceMonsterLevel(state.character);
   elements["reference-monster-level"].value = reference;
+  elements["min-monster-level"].value = Math.max(20, reference - 80);
   elements["max-monster-level"].value = Math.min(5000, Math.max(reference + 40, 100));
   elements["data-summary"].hidden = false;
   elements["data-summary"].innerHTML = coverage.warnings.length ? `<strong>数据需要注意：</strong>${coverage.warnings.map(escapeHtml).join("；")}` : `<strong>校验通过。</strong> 游戏版本 ${escapeHtml(state.catalog.gameVersion)}；角色拥有 ${summary.itemStacks} 组物品、已学 ${summary.learnedAbilities} 个战斗技能，迷宫历史最高 ${summary.highestFloor} 层。`;
@@ -163,7 +182,14 @@ if (localBridgeAvailable) {
 }
 renderChoices(); installChoiceToolbar(); renderFixedSkillRules();
 
-function progressWithinMonster(progress) { if (progress.phase === "recommendation") return 0.96; if (progress.phase === "level") return 0.88; const part = progress.evaluations ? Math.min(1, progress.evaluations / 250) : 0; return progress.phase === "counter" ? 0.55 + part * 0.3 : part * 0.82; }
+function progressWithinMonster(progress) {
+  const part = progress.totalPlans ? Math.min(1, (progress.completedPlans || 0) / progress.totalPlans) : 0;
+  const phasePart = progress.phase === "test" ? part * 0.64
+    : progress.phase === "review" ? 0.64 + part * 0.22
+      : progress.phase === "optimize" ? 0.86 + part * 0.14 : 0;
+  const directionCount = Math.max(1, Number(progress.directionCount) || 1);
+  return ((Math.max(1, Number(progress.directionIndex) || 1) - 1) + phasePart) / directionCount;
+}
 function renderTabs() {
   const selected = selectedValues("monster-options");
   elements["monster-tabs"].innerHTML = selected.map((hrid) => { const result = state.results[LABYRINTH_MONSTER_HRIDS.indexOf(hrid)]; return `<button type="button" role="tab" data-hrid="${hrid}" class="${state.activeMonster === LABYRINTH_MONSTER_HRIDS.indexOf(hrid) ? "active" : ""} ${result ? "" : "pending"}" aria-selected="${state.activeMonster === LABYRINTH_MONSTER_HRIDS.indexOf(hrid)}"><strong>${escapeHtml(result?.name || MONSTER_NAMES[hrid])}</strong><span>${result ? `${result.searchCapped ? "至少" : "最高"} Lv.${result.highestMonsterLevel ?? result.highestLevel} · ${percent(result.finalResult.clearRate)}` : "等待模拟"}</span></button>`; }).join("");
@@ -203,11 +229,33 @@ function renderLoadoutChart(result) {
   const abilities = rows.abilities.map((entry) => `<div class="loadout-tile"><div class="loadout-tile-icon">${officialIconMarkup(entry.hrid, state.catalog, entry.name)}</div><div class="loadout-tile-copy"><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.slot)} · ${escapeHtml(entry.level)}</small></div></div>`).join("");
   return `<section class="loadout-chart"><div class="loadout-chart-heading"><h3>最终配装</h3><span>主副严格对称</span></div><div class="loadout-chart-section"><h4>装备</h4><div class="loadout-chart-grid">${gear}</div></div><div class="loadout-chart-section"><h4>技能顺序</h4><div class="loadout-chart-grid ability-grid">${abilities}</div></div></section>`;
 }
+function selectedRankedResult(result) {
+  const selection = state.resultSelections.get(result.monsterHrid) || { list: "winRate", rank: 1 };
+  const entry = result.rankings?.[selection.list]?.[selection.rank - 1] || result.rankings?.winRate?.[0];
+  if (!entry) return { view: result, selection };
+  return {
+    selection,
+    view: {
+      ...result,
+      bestPlan: entry.plan,
+      finalResult: entry.result,
+      finalMetrics: entry.metrics,
+      highestMonsterLevel: entry.monsterLevel,
+      highestLevel: entry.monsterLevel,
+      estimatedHighestFloorRange: monsterLevelToFloorRange(entry.monsterLevel),
+    },
+  };
+}
+function rankingControls(result, selection) {
+  const listButton = (key, label) => `<button type="button" class="ranking-button ${selection.list === key ? "active" : ""}" data-ranking-list="${key}">${label}</button>`;
+  const ranks = result.rankings?.[selection.list] || [];
+  return `<div class="ranking-controls"><div>${listButton("winRate", "胜率最高")}${listButton("speed", "胜场耗时最短")}</div><div>${ranks.map((entry) => `<button type="button" class="ranking-button ${selection.rank === entry.rank ? "active" : ""}" data-ranking-rank="${entry.rank}">第 ${entry.rank} 名</button>`).join("")}</div></div>`;
+}
 function renderDetail() {
   const result = state.results[state.activeMonster]; if (!result) { elements["monster-detail"].innerHTML = '<div class="empty-result">该怪物尚未完成模拟。</div>'; return; }
-  const simulation = result.finalResult;
-  const metrics = result.finalMetrics || {};
-  const recommendations = Array.isArray(result.recommendations) ? result.recommendations : [];
+  const { view, selection } = selectedRankedResult(result);
+  const simulation = view.finalResult;
+  const metrics = view.finalMetrics || {};
   const directionLabel = (entry) => entry?.strategyZh || `${entry.styleZh}${entry.styleHrid === "/combat_styles/magic" ? `·${entry.damageTypeZh}` : "·物理"}`;
   const directions = result.profile.selectedDirections.map(directionLabel).join(" / ");
   const chosen = result.chosenDirection ? directionLabel(result.chosenDirection) : "—";
@@ -217,14 +265,16 @@ function renderDetail() {
   const specialCore = result.profile.specialStrategy?.coreZh?.length ? ` · 特化核心：${result.profile.specialStrategy.coreZh.join(" / ")}` : "";
   const counter = Math.max(0, Number(simulation.damageSummary?.counterDamage) || 0);
   const counts = result.candidateCounts || {};
-  const retainedByDirection = (result.searchDiagnostics?.directionResults || []).map((entry) => `${directionLabel(entry.direction)} ${entry.retainedPlans || 0} 套`).join(" / ") || "—";
-  const boundaryNote = result.searchDiagnostics?.finalistResults?.some((entry) => entry.boundaryReview?.nonMonotonic) ? "；检测到等级边界附近的抽样非单调，已做相邻等级复核" : "";
-  const recommendationMarkup = recommendations.length
-    ? `<section class="recommendations"><h3>提升建议</h3><ol>${recommendations.map((entry) => `<li><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.text)}；胜率 ${entry.clearRateDelta >= 0 ? "+" : ""}${(entry.clearRateDelta * 100).toFixed(1)} 个百分点${Number.isFinite(entry.secondsDelta) ? `；耗时 ${entry.secondsDelta >= 0 ? "+" : ""}${entry.secondsDelta.toFixed(2)} 秒` : ""}</span></li>`).join("")}</ol></section>`
-    : `<section class="recommendations"><h3>下一步提升建议</h3><p class="settings-note">当前没有可复测的装备、技能或战斗等级提升候选。</p></section>`;
-  elements["monster-detail"].innerHTML = `<div class="result-hero"><div><p class="eyebrow">迷宫怪物</p><h3>${escapeHtml(result.name)}</h3><div class="weaknesses">弱点：${escapeHtml(directions)} · 采用：${escapeHtml(chosen)}${escapeHtml(specialCore)}<br>来袭：${escapeHtml(incomingStyles)}·${escapeHtml(incomingDamage)} · 防御：${escapeHtml(defenseFocus)}</div></div><div class="result-score"><strong>${highestMonsterLevelText(result)}</strong><span>${floorRangeText(result.estimatedHighestFloorRange || monsterLevelToFloorRange(result.highestLevel))}</span></div></div><div class="metric-grid"><div class="metric"><span>复核胜率</span><strong>${percent(simulation.clearRate)}</strong><small>${simulation.successes} / ${simulation.trials}</small></div><div class="metric"><span>稳健下界</span><strong>${percent(metrics.robustSuccessLower)}</strong><small>90% Wilson</small></div><div class="metric"><span>死亡 / 超时</span><strong>${percent(metrics.deathRate)} / ${percent(metrics.timeoutRate)}</strong></div><div class="metric"><span>期望通关耗时</span><strong>${seconds(metrics.expectedSecondsPerClear)}</strong></div><div class="metric"><span>成功平均耗时</span><strong>${seconds(simulation.averageClearSeconds)}</strong></div><div class="metric"><span>伤害效率</span><strong>${Number.isFinite(metrics.damagePerSecond) ? Math.round(metrics.damagePerSecond).toLocaleString("zh-CN") : "—"}</strong></div><div class="metric"><span>综合命中</span><strong>${simulation.attackSummary?.total > 0 ? percent(simulation.attackSummary.hitRate) : "—"}</strong></div><div class="metric"><span>反制伤害</span><strong>${Math.round(counter).toLocaleString("zh-CN")}</strong></div></div>${renderLoadoutChart(result)}<ul class="issue-list">${result.issues.map((issue) => `<li class="${escapeHtml(issue.type)}">${escapeHtml(issue.text)}</li>`).join("")}</ul><details class="inline-help result-method"><summary>搜索统计与判定口径</summary><p>${escapeHtml(result.floorScaling.rule)}。方向保留：${escapeHtml(retainedByDirection)}。进攻 ${counts.offensePlans || 0} 批，反制 ${counts.counterPlans || 0} 批，等级探测 ${counts.highestLevelProbes || 0} 次，提升建议 ${counts.recommendationSimulations || 0} 次，总计 ${counts.simulatedPlans || 0} 批；双项联动 ${counts.interactionPlans || 0} 批，生存扩展 ${counts.survivalPlans || 0} 批，自适应追加 ${counts.adaptiveBatches || 0} 批${boundaryNote}。</p></details>`;
-  elements["monster-detail"].innerHTML = elements["monster-detail"].innerHTML.replaceAll("100场", `${result.trialsPerPlan || simulation.trials}场`);
-  elements["monster-detail"].querySelector(".issue-list")?.insertAdjacentHTML("afterend", recommendationMarkup);
+  const directionSummary = (result.searchDiagnostics?.directionResults || []).map((entry) => `${directionLabel(entry.direction)}：保存 ${entry.savedPlans} 套，测试 ${entry.testProbes} 次等级探测，复核 ${entry.reviewCandidates} 套，排序 ${entry.orderedPlans} 套`).join("；") || "—";
+  elements["monster-detail"].innerHTML = `${rankingControls(result, selection)}<div class="result-hero"><div><p class="eyebrow">迷宫怪物</p><h3>${escapeHtml(result.name)}</h3><div class="weaknesses">弱点：${escapeHtml(directions)} · 采用：${escapeHtml(chosen)}${escapeHtml(specialCore)}<br>来袭：${escapeHtml(incomingStyles)}·${escapeHtml(incomingDamage)} · 防御：${escapeHtml(defenseFocus)}</div></div><div class="result-score"><strong>${highestMonsterLevelText(view)}</strong><span>${floorRangeText(view.estimatedHighestFloorRange || monsterLevelToFloorRange(view.highestLevel))}</span></div></div><div class="metric-grid"><div class="metric"><span>优化胜率</span><strong>${percent(simulation.clearRate)}</strong><small>${simulation.successes} / ${simulation.trials}</small></div><div class="metric"><span>稳健下界</span><strong>${percent(metrics.robustSuccessLower)}</strong><small>80% Wilson 区间下界</small></div><div class="metric"><span>死亡 / 超时</span><strong>${percent(metrics.deathRate)} / ${percent(metrics.timeoutRate)}</strong></div><div class="metric"><span>期望通关耗时</span><strong>${seconds(metrics.expectedSecondsPerClear)}</strong></div><div class="metric"><span>成功平均耗时</span><strong>${seconds(simulation.averageClearSeconds)}</strong></div><div class="metric"><span>伤害效率</span><strong>${Number.isFinite(metrics.damagePerSecond) ? Math.round(metrics.damagePerSecond).toLocaleString("zh-CN") : "—"}</strong></div><div class="metric"><span>综合命中</span><strong>${simulation.attackSummary?.total > 0 ? percent(simulation.attackSummary.hitRate) : "—"}</strong></div><div class="metric"><span>反制伤害</span><strong>${Math.round(counter).toLocaleString("zh-CN")}</strong></div></div>${renderLoadoutChart(view)}<ul class="issue-list">${result.issues.map((issue) => `<li class="${escapeHtml(issue.type)}">${escapeHtml(issue.text)}</li>`).join("")}</ul><details class="inline-help result-method"><summary>全量搜索统计</summary><p>${escapeHtml(result.floorScaling.rule)}。${escapeHtml(directionSummary)}。总计实际模拟 ${counts.simulatedPlans || 0} 批（测试二分 ${counts.testProbes || 0}、复核二分 ${counts.reviewProbes || 0}、技能顺序 ${counts.optimizationPlans || 0}）；阶段次数：测试 ${result.phaseTrials?.test || 0}、复核 ${result.phaseTrials?.review || 0}、优化 ${result.phaseTrials?.optimize || 0}。</p></details>`;
+  elements["monster-detail"].querySelectorAll("[data-ranking-list]").forEach((button) => button.addEventListener("click", () => {
+    state.resultSelections.set(result.monsterHrid, { list: button.dataset.rankingList, rank: 1 });
+    renderDetail();
+  }));
+  elements["monster-detail"].querySelectorAll("[data-ranking-rank]").forEach((button) => button.addEventListener("click", () => {
+    state.resultSelections.set(result.monsterHrid, { list: selection.list, rank: Number(button.dataset.rankingRank) });
+    renderDetail();
+  }));
 }
 
 async function runMonster(monsterHrid, index, options, engine, total) {
@@ -233,23 +283,28 @@ async function runMonster(monsterHrid, index, options, engine, total) {
     state.monsterProgress.set(monsterHrid, progressWithinMonster(progress));
     const aggregate = [...state.monsterProgress.values()].reduce((sum, value) => sum + value, 0);
     elements["progress-bar"].style.width = `${Math.min(99, (aggregate / total) * 100).toFixed(1)}%`;
-    const phase = progress.phase === "offense" ? "进攻筛选" : progress.phase === "counter" ? "反制搜索" : progress.phase === "level" ? "最高等级复核" : progress.phase === "recommendation" ? "提升建议" : "处理中";
-    const round = progress.balancedMaxRounds ? `第 ${progress.balancedRound || 1}/${progress.balancedMaxRounds} 轮 · ` : "";
+    const phase = progress.phase === "test" ? "测试阶段" : progress.phase === "review" ? "复核阶段" : progress.phase === "optimize" ? "优化阶段" : "处理中";
     const direction = progress.direction ? `${progress.direction.strategyZh || `${progress.direction.styleZh || ""}${progress.direction.damageTypeZh ? `·${progress.direction.damageTypeZh}` : ""}`} · ` : "";
-    const detail = progress.phase === "level" ? `探测 Lv.${progress.level || "—"}${progress.finalistCount ? `（候选 ${progress.finalistIndex || 1}/${progress.finalistCount}）` : ""}` : progress.phase === "recommendation" ? `已完成 ${progress.completed || 0}/${progress.total || 0} 项` : `${direction}${round}本阶段累计比较 ${progress.phaseEvaluations || progress.evaluations || 0} 套`;
+    const detail = `${direction}方案 ${progress.currentPlan || progress.completedPlans || 0}/${progress.totalPlans || "—"}${progress.level ? ` · 二分探测 Lv.${progress.level}` : ""}${progress.probeCount ? ` · 本方案第 ${progress.probeCount} 次探测` : ""}`;
     elements["run-status"].textContent = `${name} · ${phase} · ${detail}`;
   } });
 }
 async function runAll() {
   const monsterHrids = selectedValues("monster-options"); if (!monsterHrids.length) { elements["run-status"].textContent = "至少选择一个怪物"; return; }
-  const equipmentValues = selectedValues("equipment-options");
-  const selectedEquipmentTypes = new Set(equipmentValues.filter((value) => value !== "weapon_group"));
-  if (equipmentValues.includes("weapon_group")) for (const type of HAND_TYPES) selectedEquipmentTypes.add(type);
-  const skillValues = selectedValues("skill-options"); const selectedSlots = new Set(skillValues.filter((value) => value !== "aura").map(Number));
-  const trialsPerPlan = Math.max(10, Math.min(1000, Math.floor(Number(elements["trials-per-plan"].value) || 20)));
-  elements["trials-per-plan"].value = String(trialsPerPlan);
-  const options = { referenceMonsterLevel: Math.max(20, Number(elements["reference-monster-level"].value) || 20), maxMonsterLevel: Math.max(20, Number(elements["max-monster-level"].value) || 300), hardMaxLevel: 5000, minMonsterLevel: 20, searchSpaceOptions: { selectedEquipmentTypes }, optimizableEquipmentTypes: selectedEquipmentTypes, optimizeAura: skillValues.includes("aura"), optimizableActiveSlots: selectedSlots, fixedAbilityRules: structuredClone(state.fixedRules), targetRate: Math.max(0.01, Math.min(0.99, (Number(elements["target-rate"].value) || 70) / 100)), trialsPerPlan, confidenceZ: 1.2815515655446004, feasibilityMode: "observed", retentionRatio: 0.1, minimumRetainedPlans: 10, maximumRetainedPlans: 50 };
-  state.results = []; state.monsterProgress = new Map(monsterHrids.map((hrid) => [hrid, 0])); state.startedAt = new Date().toISOString(); state.auditRecorder = createSimulationAuditRecorder({ startedAt: state.startedAt, resolveName: (hrid) => chineseName(hrid, state.catalog?.itemDetailMap?.[hrid]?.name || state.catalog?.abilityDetailMap?.[hrid]?.name || state.catalog?.combatMonsterDetailMap?.[hrid]?.name || hrid), onRecord: (record) => renderAuditStatus(record) }); state.abortController = new AbortController(); state.engines = []; elements["start-button"].disabled = true; elements["cancel-button"].hidden = false; elements["progress-track"].hidden = false; elements["progress-bar"].style.width = "1%"; elements["results-section"].hidden = false; renderAuditStatus(); renderTabs(); renderDetail();
+  const selectedEquipmentTypes = new Set(selectedValues("equipment-options"));
+  const skillValues = selectedValues("skill-options");
+  const minMonsterLevel = Math.max(1, Math.floor(Number(elements["min-monster-level"].value) || 20));
+  const maxMonsterLevel = Math.max(minMonsterLevel, Math.floor(Number(elements["max-monster-level"].value) || 300));
+  elements["min-monster-level"].value = String(minMonsterLevel);
+  elements["max-monster-level"].value = String(maxMonsterLevel);
+  const testTrials = Math.max(10, Math.min(10000, Math.floor(Number(elements["test-trials"].value) || 100)));
+  const reviewTrials = Math.max(10, Math.min(10000, Math.floor(Number(elements["review-trials"].value) || 300)));
+  const optimizeTrials = Math.max(10, Math.min(10000, Math.floor(Number(elements["optimize-trials"].value) || 500)));
+  elements["test-trials"].value = String(testTrials);
+  elements["review-trials"].value = String(reviewTrials);
+  elements["optimize-trials"].value = String(optimizeTrials);
+  const options = { referenceMonsterLevel: Math.max(20, Number(elements["reference-monster-level"].value) || 20), minMonsterLevel, maxMonsterLevel, minimumEquipmentLevel: 80, optimizableEquipmentTypes: selectedEquipmentTypes, optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: structuredClone(state.fixedRules), targetRate: Math.max(0.01, Math.min(0.99, (Number(elements["target-rate"].value) || 70) / 100)), testTrials, reviewTrials, optimizeTrials };
+  state.results = []; state.resultSelections = new Map(); state.monsterProgress = new Map(monsterHrids.map((hrid) => [hrid, 0])); state.startedAt = new Date().toISOString(); state.auditRecorder = createSimulationAuditRecorder({ startedAt: state.startedAt, resolveName: (hrid) => chineseName(hrid, state.catalog?.itemDetailMap?.[hrid]?.name || state.catalog?.abilityDetailMap?.[hrid]?.name || state.catalog?.combatMonsterDetailMap?.[hrid]?.name || hrid), onRecord: (record) => renderAuditStatus(record) }); state.abortController = new AbortController(); state.engines = []; elements["start-button"].disabled = true; elements["cancel-button"].hidden = false; elements["progress-track"].hidden = false; elements["progress-bar"].style.width = "1%"; elements["results-section"].hidden = false; renderAuditStatus(); renderTabs(); renderDetail();
   try {
     const concurrency = Math.max(1, Math.min(Number(elements["parallel-count"].value) || 1, monsterHrids.length)); let cursor = 0;
     const engine = new CombatEngine({ workerCount: CPU_WORKER_COUNT, minimumTrialsPerWorker: 2 });
@@ -264,16 +319,16 @@ async function runAll() {
 elements["start-button"].addEventListener("click", runAll); elements["cancel-button"].addEventListener("click", () => { state.abortController?.abort(); state.engines.forEach((engine) => engine.terminate()); });
 elements["export-button"].addEventListener("click", () => {
   const skillValues = selectedValues("skill-options");
-  const payload = { reportType: "mwi_labyrinth_collapsible_summary_v025", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), optimizeAura: skillValues.includes("aura"), selectedActiveSlots: skillValues.filter((value) => value !== "aura").map(Number), fixedAbilityRules: state.fixedRules, trialsPerPlan: Math.max(10, Math.min(1000, Math.floor(Number(elements["trials-per-plan"].value) || 20))), parallelCount: Number(elements["parallel-count"].value), cpuWorkerCount: CPU_WORKER_COUNT, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "普通怪物先闪避、后兼容抗性；宝箱怪固定反伤·荆棘；第二候选严格大于最低值两倍时淘汰", matchedPresetOnly: true, targetedDefense: true, mimicSpecialStrategy: "retaliation_thorns", interactionPairs: "每轮在定向候选中显式复测不同维度的双项联动", survivalSemantics: "死亡占优时按治疗、生命汲取、生命偷取及防御效果字段开放生存候选", adaptiveTrials: "低样本候选的 Wilson 区间重叠时追加独立试次", retentionRatio: 0.1, minimumRetainedPlans: 10, maximumRetainedPlans: 50, sharedPresetBeam: true, confidence: "90% 单侧 Wilson 下界", highestLevelCriterion: "达到观测目标胜率的最高怪物等级", boundaryReview: "最高等级边界相邻等级复核", recommendationCoverage: "装备、技能、战斗等级均衡抽样后逐项真实复测" }, results: state.results };
-  downloadJson(payload, `mwi迷宫模拟报告-v025-${new Date().toISOString().slice(0, 10)}.json`);
+  const payload = { reportType: "mwi_labyrinth_exhaustive_search_v026", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), cpuWorkerCount: CPU_WORKER_COUNT, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "闪避优先、抗性其次；第二候选严格大于最低值两倍时淘汰", independentWeaknessDirections: true, minimumCombatEquipmentRequirement: 80, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "主手+非空副手，或双手；固定副手时排除双手", skillSetBeforeOrder: true, uniqueWithinStage: true, testReviewBinarySearch: true, reviewTolerance: 0.01, finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
+  downloadJson(payload, `mwi迷宫模拟报告-v026-${new Date().toISOString().slice(0, 10)}.json`);
 });
 elements["export-audit-button"].addEventListener("click", () => {
   if (!state.auditRecorder?.records.length) { elements["run-status"].textContent = "尚无模拟明细可下载"; return; }
   const payload = state.auditRecorder.exportPayload({
     gameVersion: state.catalog?.gameVersion,
     selectedMonsters: selectedValues("monster-options"),
-    trialsPerPlan: Math.max(10, Math.min(1000, Math.floor(Number(elements["trials-per-plan"].value) || 20))),
+    phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) },
   });
-  downloadJson(payload, `mwi模拟审计日志-v025-${new Date().toISOString().slice(0, 10)}.json`);
+  downloadJson(payload, `mwi模拟审计日志-v026-${new Date().toISOString().slice(0, 10)}.json`);
 });
   elements["export-loadout-button"].addEventListener("click", async () => { try { const ok = await downloadLoadouts(state.results, state.catalog, SLOT_NAMES, MONSTER_NAMES); elements["run-status"].textContent = ok ? "已导出全部怪物配装总表" : "尚无已完成的方案可导出"; } catch (error) { elements["run-status"].textContent = `配装总表导出失败：${error.message}`; } });
