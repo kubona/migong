@@ -347,7 +347,9 @@ export function buildEngineWorkerSource(vendorChunkSource, workerChunkSource) {
 export function recommendedWorkerCount(logicalProcessors = globalThis.navigator?.hardwareConcurrency) {
   const logical = Math.max(1, Math.floor(Number(logicalProcessors) || 4));
   const reserved = logical >= 8 ? 4 : logical >= 4 ? 2 : 1;
-  const utilizationCap = Math.max(1, Math.floor(logical * 0.75));
+  // Worker 只占逻辑处理器的 65%，为页面主线程和系统负载预留 15% 余量，
+  // 使模拟器整体 CPU 使用率在正常调度下保持在用户要求的 80% 上限内。
+  const utilizationCap = Math.max(1, Math.floor(logical * 0.65));
   return Math.max(1, Math.min(22, logical - reserved, utilizationCap));
 }
 

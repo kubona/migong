@@ -1,4 +1,5 @@
 import { classifyAbility } from "./classifier.js";
+import { blocksLevelOneActive } from "./ability-selection-rules.js";
 
 export const DEFAULT_FIXED_ABILITY_RULES = Object.freeze({
   magic: Object.freeze({ aura: "", requiredActives: Object.freeze([]) }),
@@ -24,7 +25,10 @@ export function learnedFixedAbilityChoices(catalog, character, wantAura) {
       const learnedLevel = levels.get(hrid);
       return hrid && learnedLevel ? { ...raw, hrid, learnedLevel } : null;
     })
-    .filter((entry) => entry && !NEVER_SELECTABLE_ABILITY_HRIDS.has(entry.hrid) && classifyAbility(entry).isAura === wantAura)
+    .filter((entry) => entry
+      && !NEVER_SELECTABLE_ABILITY_HRIDS.has(entry.hrid)
+      && classifyAbility(entry).isAura === wantAura
+      && (wantAura || !blocksLevelOneActive(catalog, entry)))
     .sort((left, right) => String(left.name || left.hrid).localeCompare(String(right.name || right.hrid), "zh-CN"));
 }
 

@@ -106,7 +106,6 @@ export function createSimulationAuditRecorder(options = {}) {
         planId: context.planId || null,
         searchRound: context.searchRound == null ? null : Math.max(0, Math.floor(number(context.searchRound, 0))),
         direction: context.direction || null,
-        sourcePreset: context.sourcePreset || null,
         changedDimensions: [...(context.changedDimensions || [])],
         combinationSignature,
         repeatIndex,
@@ -156,7 +155,7 @@ export function createSimulationAuditRecorder(options = {}) {
     },
     exportPayload(extra = {}) {
       return {
-        reportType: "mwi_labyrinth_simulation_audit_v026",
+        reportType: "mwi_labyrinth_simulation_audit_v029",
         schemaVersion: 2,
         startedAt,
         exportedAt: new Date().toISOString(),

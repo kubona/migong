@@ -65,7 +65,7 @@ function buildEquipment(equipmentCandidate) {
   return result;
 }
 
-function buildAbilities(character, catalog, abilityOrder, intelligenceLevel, combatContext = {}) {
+function buildAbilities(character, catalog, abilityOrder, intelligenceLevel) {
   const learnedLevels = Object.fromEntries((character.characterAbilities || []).map((entry) => [entry.abilityHrid, Math.max(1, Math.floor(finiteNumber(entry.level, 1)))]));
   const requirements = Array.isArray(catalog.abilitySlotsLevelRequirementList)
     ? catalog.abilitySlotsLevelRequirementList
@@ -78,9 +78,7 @@ function buildAbilities(character, catalog, abilityOrder, intelligenceLevel, com
       result.push(null);
       continue;
     }
-    const presetConfigured = combatContext.abilityCombatTriggersMap?.[ability.hrid];
     const characterConfigured = character.abilityCombatTriggersMap?.[ability.hrid];
-    const configured = Array.isArray(presetConfigured) ? presetConfigured : characterConfigured;
     const defaults = catalog.abilityDetailMap?.[ability.hrid]?.defaultCombatTriggers;
     result.push({
       hrid: String(ability.hrid),
@@ -88,13 +86,13 @@ function buildAbilities(character, catalog, abilityOrder, intelligenceLevel, com
         learnedLevels[ability.hrid] || 0,
         Math.max(1, Math.floor(finiteNumber(ability.level, 1))),
       ),
-      triggers: structuredCloneSafe(Array.isArray(configured) ? configured : Array.isArray(defaults) ? defaults : []),
+      triggers: structuredCloneSafe(Array.isArray(characterConfigured) ? characterConfigured : Array.isArray(defaults) ? defaults : []),
     });
   }
   return result;
 }
 
-export function buildSimulationInput(character, catalog, equipmentCandidate, abilityOrder, combatContext = {}) {
+export function buildSimulationInput(character, catalog, equipmentCandidate, abilityOrder) {
   const levels = combatLevels(character);
   const houseRooms = {};
   for (const [key, room] of Object.entries(character.characterHouseRoomMap || {})) {
@@ -124,7 +122,7 @@ export function buildSimulationInput(character, catalog, equipmentCandidate, abi
       equipment: buildEquipment(equipmentCandidate),
       food: [],
       drinks: [],
-      abilities: buildAbilities(character, catalog, abilityOrder, levels.intelligence, combatContext),
+      abilities: buildAbilities(character, catalog, abilityOrder, levels.intelligence),
       houseRooms,
       achievements,
       debuffOnLevelGap: 0,

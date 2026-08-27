@@ -2,7 +2,7 @@ import { finiteNumber, monsterLevelToFloorRange, resolveReferenceMonsterLevel } 
 import { classifyMonster } from "./classifier.js";
 import {
   activeOrderPermutations,
-  buildPresetTemplates,
+  buildCurrentBaseline,
   buildTargetedComponentPool,
   buildUniqueComponentPlans,
 } from "./component-planner.js";
@@ -94,6 +94,8 @@ function compareSpeed(left, right) {
 
 async function simulatePlan(options) {
   checkAbort(options.signal);
+  await options.pauseController?.waitIfPaused(options.signal);
+  checkAbort(options.signal);
   const input = {
     ...options.plan.simulationInput,
     monsterHrid: options.monsterHrid,
@@ -107,7 +109,6 @@ async function simulatePlan(options) {
     reason: options.reason,
     candidateKind: options.candidateKind,
     direction: options.direction,
-    sourcePreset: options.plan.sourcePreset,
     expectedRetest: Boolean(options.expectedRetest),
     planId: options.planId || null,
   };
@@ -187,15 +188,14 @@ async function runDirectionWorkflow(options) {
     minimumEquipmentLevel: options.minimumEquipmentLevel,
     selectedEquipmentTypes: poolTypes,
   });
-  const templates = buildPresetTemplates(options.character, options.catalog, pool, options.direction);
-  if (!templates.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有匹配的完整战斗预设`);
-  const plans = buildUniqueComponentPlans(templates, pool, options.direction, options.monsterHrid, {
+  const baseline = buildCurrentBaseline(options.character, options.catalog, pool);
+  const plans = buildUniqueComponentPlans(baseline, pool, options.direction, options.monsterHrid, {
     selectedEquipmentTypes: selectedTypes,
     optimizeAura: options.optimizeAura,
     optimizeActives: options.optimizeActives,
     fixedAbilityRules: options.fixedAbilityRules,
   }).map((plan) => enrichPlan(options.character, options.catalog, plan));
-  if (!plans.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有符合主副手和固定技能规则的组合`);
+  if (!plans.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有符合候选池、当前固定栏位和固定技能规则的组合`);
 
   const testResults = [];
   for (let index = 0; index < plans.length; index += 1) {
@@ -207,6 +207,7 @@ async function runDirectionWorkflow(options) {
       trials: options.testTrials,
       seedBase: options.seedBase + 100000,
       planId: `T${index + 1}`,
+      expectedRetest: options.directionIndex > 1,
       onProbe: ({ level, probeCount }) => options.onProgress?.({
         phase: "test",
         direction: options.direction,
@@ -284,7 +285,6 @@ async function runDirectionWorkflow(options) {
     direction: options.direction,
     profile: options.profile,
     poolDiagnostics: pool.diagnostics,
-    startingPresets: templates.map((entry) => entry.sourcePreset),
     savedPlanCount: plans.length,
     testResults,
     bestTestLevel,
@@ -338,6 +338,7 @@ export async function optimizeMonsterExhaustive(options) {
       monsterHrid,
       direction,
       profile,
+      directionIndex: index + 1,
       minLevel,
       maxLevel,
       minimumEquipmentLevel: options.minimumEquipmentLevel ?? 80,
@@ -394,8 +395,6 @@ export async function optimizeMonsterExhaustive(options) {
     searchDiagnostics: {
       directionResults: directionResults.map((entry) => ({
         direction: entry.direction,
-        startingPresets: entry.startingPresets.length,
-        startPresetNames: entry.startingPresets,
         savedPlans: entry.savedPlanCount,
         testProbes: entry.testResults.reduce((sum, result) => sum + result.probeCount, 0),
         bestTestLevel: entry.bestTestLevel,

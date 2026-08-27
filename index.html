@@ -7,20 +7,19 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>银河奶牛放置迷宫配装模拟器</title>
   <link rel="stylesheet" href="./styles.css">
+  <script src="./js/theme.js"></script>
 </head>
 <body>
   <header class="hero">
     <div class="hero__inner">
-      <p class="eyebrow">银河奶牛放置 · 迷宫实验室</p>
       <h1>迷宫配装模拟器</h1>
-      <p class="hero__copy">按怪物弱点和攻击类型搜索配装，并用真实战斗结果复核。</p>
-      <div class="privacy">数据仅在本机处理</div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换为明亮主题" title="切换为明亮主题"><span aria-hidden="true">☀</span><span>明亮</span></button>
     </div>
   </header>
 
   <main class="shell">
     <details id="data-panel" class="panel collapsible-panel import-panel" open>
-      <summary class="section-heading"><span class="step">1</span><span class="heading-copy"><strong id="import-title">加载数据</strong><small>自动桥接或手动选择文件</small></span><span class="collapse-label"></span></summary>
+      <summary class="section-heading"><span class="step">1</span><strong id="import-title">加载数据</strong><span class="collapse-label"></span></summary>
       <div class="panel-content">
         <div id="bridge-status" class="bridge-status">正在等待数据桥接…</div>
         <div class="file-grid">
@@ -32,47 +31,46 @@
     </details>
 
     <details id="scope-panel" class="panel collapsible-panel" open>
-      <summary class="section-heading"><span class="step">2</span><span class="heading-copy"><strong id="targets-title">模拟范围</strong><small>未选栏位沿用角色预设</small></span><span class="collapse-label"></span></summary>
+      <summary class="section-heading"><span class="step">2</span><strong id="targets-title">模拟范围</strong><span class="collapse-label"></span></summary>
       <div class="panel-content subsection-stack">
         <details id="monster-scope" class="subsection" open><summary>迷宫怪物</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="monsters">全选</button><button type="button" class="text-button" data-clear-all="monsters">清空</button></div><div id="monster-options" class="choice-grid monster-choice-grid"></div></div></details>
-        <details id="equipment-scope" class="subsection"><summary>参与组合的装备部位</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="equipment">全选</button><button type="button" class="text-button" data-clear-all="equipment">清空</button></div><div id="equipment-options" class="choice-grid equipment-choice-grid"></div><p class="compact-note">主手和副手都参与时，搜索“主手＋副手”和双手武器；固定副手时自动排除双手武器，单手武器不允许空副手。</p></div></details>
-        <details id="skill-scope" class="subsection"><summary>参与组合的技能类别</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="skills">全选</button><button type="button" class="text-button" data-clear-all="skills">清空</button></div><div id="skill-options" class="choice-grid skill-choice-grid"></div></div></details>
-        <details id="fixed-rules-panel" class="subsection"><summary>固定技能规则</summary><div class="subsection-content"><p class="compact-note">普通固定技能只要求出现在四个主动技能中，不固定位置；魔法方向对应元素的 0CD 技能永久固定在主动4。</p><p id="fixed-rules-status" class="compact-note">加载两份数据后显示已学技能。</p><div id="fixed-skill-rules"></div></div></details>
+        <details id="equipment-scope" class="subsection"><summary>装备部位</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="equipment">全选</button><button type="button" class="text-button" data-clear-all="equipment">清空</button></div><div id="equipment-options" class="choice-grid equipment-choice-grid"></div></div></details>
+        <details id="skill-scope" class="subsection"><summary>技能类别</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="skills">全选</button><button type="button" class="text-button" data-clear-all="skills">清空</button></div><div id="skill-options" class="choice-grid skill-choice-grid"></div></div></details>
+        <details id="fixed-rules-panel" class="subsection"><summary>固定技能</summary><div class="subsection-content"><p id="fixed-rules-status" class="compact-note"></p><div id="fixed-skill-rules"></div></div></details>
       </div>
     </details>
 
     <details id="settings-panel" class="panel collapsible-panel" open>
-      <summary class="section-heading"><span class="step">3</span><span class="heading-copy"><strong id="settings-title">模拟目标</strong><small>等级、胜率、次数与并行数</small></span><span class="collapse-label"></span></summary>
+      <summary class="section-heading"><span class="step">3</span><strong id="settings-title">模拟设置</strong><span class="collapse-label"></span></summary>
       <div class="panel-content">
         <div class="settings-grid">
-          <label>弱点分析参考等级<input id="reference-monster-level" type="number" min="20" max="5000" value="240"><small>用于读取该等级下的闪避和抗性</small></label>
-          <label>等级搜索下限<input id="min-monster-level" type="number" min="1" max="5000" value="20"><small>每套方案从该区间内完整二分</small></label>
-          <label>等级搜索上限<input id="max-monster-level" type="number" min="1" max="5000" value="300"><small>二分搜索不会越过此上限</small></label>
+          <label>参考等级<input id="reference-monster-level" type="number" min="20" max="5000" value="240"></label>
+          <label>等级下限<input id="min-monster-level" type="number" min="1" max="5000" value="20"></label>
+          <label>等级上限<input id="max-monster-level" type="number" min="1" max="5000" value="300"></label>
           <label>目标胜率<input id="target-rate" type="number" min="1" max="99" value="70"><span class="suffix">%</span></label>
-          <label>并行怪物数<select id="parallel-count"></select><small id="parallel-hint"></small></label>
-          <label>测试阶段次数<input id="test-trials" type="number" min="10" max="10000" step="10" value="100"><small>每个二分探测等级的战斗次数</small></label>
-          <label>复核阶段次数<input id="review-trials" type="number" min="10" max="10000" step="10" value="300"><small>1% 宽限区内方案重新完整二分</small></label>
-          <label>优化阶段次数<input id="optimize-trials" type="number" min="10" max="10000" step="10" value="500"><small>固定最高等级测试主动技能顺序</small></label>
+          <label>并行怪物数<select id="parallel-count"></select></label>
+          <label>测试次数<input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
+          <label>复核次数<input id="review-trials" type="number" min="10" max="10000" step="10" value="300"></label>
+          <label>优化次数<input id="optimize-trials" type="number" min="10" max="10000" step="10" value="500"></label>
         </div>
-        <details class="inline-help"><summary>判定口径</summary><p>每个弱点方向独立生成并保存全部唯一组件组合。测试后保留距离该方向最高等级 1% 以内的方案复核，复核保留最高 5 套；优化阶段分别给出胜率最高和胜场平均耗时最短的前 3 名。</p></details>
       </div>
     </details>
 
     <section class="run-panel" aria-label="开始模拟">
       <button id="start-button" class="primary-button" disabled>开始全量模拟</button>
+      <button id="pause-button" class="secondary-button" hidden>暂停</button>
       <button id="cancel-button" class="secondary-button" hidden>停止</button>
       <div class="run-status" id="run-status">请先加载两份数据</div>
-      <div class="run-note" id="audit-status">开始后记录每个组合及结果</div>
+      <div class="run-note" id="audit-status" hidden></div>
       <div class="progress-track" id="progress-track" hidden><div id="progress-bar"></div></div>
     </section>
 
     <section id="results-section" class="results" hidden aria-labelledby="results-title">
-      <div class="results-heading"><div><p class="eyebrow">模拟报告</p><h2 id="results-title">配装结果</h2></div><div class="results-actions"><button id="export-audit-button" class="secondary-button" disabled>下载模拟明细</button><button id="export-loadout-button" class="secondary-button">导出配装总表</button><button id="export-button" class="secondary-button">导出完整报告</button></div></div>
+      <div class="results-heading"><h2 id="results-title">配装结果</h2><div class="results-actions"><button id="export-audit-button" class="secondary-button" disabled>下载模拟明细</button><button id="export-loadout-button" class="secondary-button">导出配装总表</button><button id="export-button" class="secondary-button">导出完整报告</button></div></div>
       <details id="summary-report" class="report-block" open><summary>全部怪物配装总表</summary><div id="loadout-summary" class="loadout-summary"></div></details>
       <details id="detail-report" class="report-block" open><summary>单怪物详细报告</summary><div class="report-block-content"><div id="monster-tabs" class="monster-tabs" role="tablist"></div><article id="monster-detail" class="panel result-detail"></article></div></details>
     </section>
   </main>
-  <footer>随机模拟结果仅供配装比较。</footer>
   <script type="module" src="./js/app.js"></script>
 </body>
 </html>

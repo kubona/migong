@@ -2,6 +2,7 @@ import { COMBAT_EQUIPMENT_TYPES, finiteNumber } from "./data-model.js";
 import { classifyAbility, classifyEquipment } from "./classifier.js";
 import { chineseName } from "./localization.js";
 import { NEVER_SELECTABLE_ABILITY_HRIDS, normalizeFixedAbilityRules } from "./fixed-skill-options.js";
+import { abilityCombatRequirementLevel, blocksLevelOneActive } from "./ability-selection-rules.js";
 
 const MAIN_HAND = "/equipment_types/main_hand";
 const OFF_HAND = "/equipment_types/off_hand";
@@ -117,6 +118,22 @@ function equipmentEntry(owned, item, catalog, classification, stats) {
   };
 }
 
+function equipmentFamilyHrid(hrid) {
+  return String(hrid || "").replace(/_refined$/, "");
+}
+
+function isRefinedEquipment(hrid) {
+  return String(hrid || "").endsWith("_refined");
+}
+
+function preferredOwnedEquipment(candidate, current) {
+  if (!current) return true;
+  const candidateEnhancement = Math.max(0, Math.floor(finiteNumber(candidate?.enhancementLevel, 0)));
+  const currentEnhancement = Math.max(0, Math.floor(finiteNumber(current?.enhancementLevel, 0)));
+  if (candidateEnhancement !== currentEnhancement) return candidateEnhancement > currentEnhancement;
+  return isRefinedEquipment(candidate?.itemHrid) && !isRefinedEquipment(current?.itemHrid);
+}
+
 function abilityOffenseMatches(classification, direction) {
   if (classification.hasDamage) return matchesDirection(classification.styles, classification.damageTypes, direction);
   if (!classification.offensiveSupport) return false;
@@ -150,16 +167,22 @@ export function buildTargetedComponentPool(character, catalog, profile, directio
   const targets = targetStatKeys(profile);
   const offenseByType = {};
   const defenseByType = {};
-  const seen = new Set();
+  const bestOwnedByFamily = new Map();
+  let eligibleOwnedVariantCount = 0;
 
   for (const owned of character?.characterItems || []) {
     const item = catalog?.itemDetailMap?.[owned.itemHrid];
     const type = item?.equipmentDetail?.type;
     if (!item || !COMBAT_EQUIPMENT_TYPES.has(type) || !selectedTypes.has(type)) continue;
     if (combatRequirementLevel(item) < minimumEquipmentLevel || !requirementsMet(item, skillLevels)) continue;
-    const key = `${owned.itemHrid}@${Math.max(0, Math.floor(finiteNumber(owned.enhancementLevel, 0)))}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    eligibleOwnedVariantCount += 1;
+    const key = `${type}:${equipmentFamilyHrid(owned.itemHrid)}`;
+    if (preferredOwnedEquipment(owned, bestOwnedByFamily.get(key))) bestOwnedByFamily.set(key, owned);
+  }
+
+  for (const owned of bestOwnedByFamily.values()) {
+    const item = catalog.itemDetailMap[owned.itemHrid];
+    const type = item.equipmentDetail.type;
     const classification = classifyEquipment(item);
     const stats = enhancedStats(item, Math.max(0, Math.floor(finiteNumber(owned.enhancementLevel, 0))), catalog);
     const entry = equipmentEntry(owned, item, catalog, classification, stats);
@@ -196,17 +219,23 @@ export function buildTargetedComponentPool(character, catalog, profile, directio
   const allActives = [];
   const auraAbilities = [];
   const activeAbilities = [];
+  const excludedLevelOneActiveHrids = [];
   const category = directionCategory(direction, profile?.monsterHrid);
   for (const [mapHrid, ability] of Object.entries(catalog?.abilityDetailMap || {})) {
     const hrid = String(ability?.hrid || mapHrid || "");
     const level = learnedLevels.get(hrid);
     if (!level || EXCLUDED_ABILITIES.has(hrid)) continue;
     const classification = classifyAbility(ability);
+    if (!classification.isAura && blocksLevelOneActive(catalog, { ...ability, hrid }, direction)) {
+      excludedLevelOneActiveHrids.push(hrid);
+      continue;
+    }
     const entry = {
       hrid,
       name: chineseName(hrid, ability.name || hrid),
       level,
       learnedLevel: level,
+      combatRequirementLevel: abilityCombatRequirementLevel(catalog, hrid),
       cooldownDuration: finiteNumber(ability.cooldownDuration, 0),
       classification,
     };
@@ -234,34 +263,27 @@ export function buildTargetedComponentPool(character, catalog, profile, directio
       retainedEquipmentVariants: Object.values(equipmentPools).reduce((sum, entries) => sum + entries.length, 0),
       retainedOffensiveEquipmentVariants: Object.values(offenseByType).reduce((sum, entries) => sum + entries.length, 0),
       retainedTargetedDefenseVariants: Object.values(equipmentPools).flat().filter((entry) => entry.isTargetedDefense).length,
+      discardedLowerEnhancementVariants: eligibleOwnedVariantCount - bestOwnedByFamily.size,
       retainedAuraAbilities: auraAbilities.length,
       retainedActiveAbilities: activeAbilities.length,
       excludedAbilityHrids: [...EXCLUDED_ABILITIES],
+      excludedLevelOneActiveHrids: excludedLevelOneActiveHrids.sort(),
     },
   };
 }
 
-function parseItemReference(reference) {
-  if (reference && typeof reference === "object") {
-    return { hrid: String(reference.itemHrid || reference.hrid || ""), enhancementLevel: Math.max(0, Math.floor(finiteNumber(reference.enhancementLevel, 0))) };
-  }
-  const parts = String(reference || "").split("::");
-  const index = parts.findIndex((part) => part.startsWith("/items/"));
-  return index < 0 ? null : { hrid: parts[index], enhancementLevel: Math.max(0, Math.floor(finiteNumber(parts[index + 1], 0))) };
-}
-
-function presetEquipment(loadout, catalog) {
+function currentEquipment(character, catalog) {
   const equipment = {};
-  for (const reference of Object.values(loadout?.wearableMap || {})) {
-    const parsed = parseItemReference(reference);
-    const item = catalog?.itemDetailMap?.[parsed?.hrid];
+  for (const owned of character?.characterItems || []) {
+    const item = catalog?.itemDetailMap?.[owned?.itemHrid];
     const type = item?.equipmentDetail?.type;
-    if (!parsed?.hrid || !COMBAT_EQUIPMENT_TYPES.has(type)) continue;
+    const expectedLocation = String(type || "").replace("/equipment_types/", "/item_locations/");
+    if (!COMBAT_EQUIPMENT_TYPES.has(type) || owned.itemLocationHrid !== expectedLocation) continue;
     equipment[type] = {
-      hrid: parsed.hrid,
-      name: chineseName(parsed.hrid, item.name || parsed.hrid),
+      hrid: owned.itemHrid,
+      name: chineseName(owned.itemHrid, item.name || owned.itemHrid),
       type,
-      enhancementLevel: parsed.enhancementLevel,
+      enhancementLevel: Math.max(0, Math.floor(finiteNumber(owned.enhancementLevel, 0))),
       count: 1,
     };
   }
@@ -272,49 +294,22 @@ function presetEquipment(loadout, catalog) {
   return equipment;
 }
 
-function presetAbilities(loadout, pool) {
-  const auraHrid = String(loadout?.abilityMap?.[1] || loadout?.abilityMap?.["1"] || "");
+function currentAbilities(character, pool) {
+  const slots = new Map((character?.characterAbilities || []).map((entry) => [
+    Math.max(0, Math.floor(finiteNumber(entry?.slotNumber, 0))),
+    String(entry?.abilityHrid || ""),
+  ]));
+  const auraHrid = slots.get(1) || "";
   const aura = pool.allAuraAbilities.find((entry) => entry.hrid === auraHrid);
-  const actives = [2, 3, 4, 5].map((slot) => {
-    const hrid = String(loadout?.abilityMap?.[slot] || loadout?.abilityMap?.[String(slot)] || "");
-    return pool.allActiveAbilities.find((entry) => entry.hrid === hrid);
-  });
-  return aura && actives.every(Boolean) && new Set(actives.map((entry) => entry.hrid)).size === 4
-    ? { aura, actives }
-    : null;
+  const actives = [2, 3, 4, 5].map((slot) => pool.allActiveAbilities.find((entry) => entry.hrid === slots.get(slot)) || null);
+  return { aura: aura || null, actives };
 }
 
-function presetMatchesDirection(equipment, catalog, direction) {
-  const weapon = equipment[TWO_HAND] || equipment[MAIN_HAND];
-  const stats = catalog?.itemDetailMap?.[weapon?.hrid]?.equipmentDetail?.combatStats || {};
-  return (stats.combatStyleHrids || []).includes(direction.styleHrid)
-    && String(stats.damageType || "") === direction.damageTypeHrid;
-}
-
-export function buildPresetTemplates(character, catalog, pool, direction) {
-  const templates = [];
-  for (const loadout of Object.values(character?.characterLoadoutMap || {})) {
-    if (loadout?.actionTypeHrid !== "/action_types/combat") continue;
-    const equipment = presetEquipment(loadout, catalog);
-    if (!presetMatchesDirection(equipment, catalog, direction)) continue;
-    const abilities = presetAbilities(loadout, pool);
-    if (!abilities) continue;
-    templates.push({
-      sourcePreset: String(loadout.name || `预设 ${loadout.id || ""}`),
-      sourcePresetId: loadout.id || null,
-      equipment,
-      ...abilities,
-    });
-  }
-  const seen = new Set();
-  return templates.filter((template) => {
-    const gear = Object.entries(template.equipment).sort(([left], [right]) => left.localeCompare(right))
-      .map(([type, item]) => `${type}:${item.hrid}@${item.enhancementLevel}`).join("|");
-    const key = `${gear}::${template.aura.hrid}::${template.actives.map((entry) => entry.hrid).sort().join(",")}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+export function buildCurrentBaseline(character, catalog, pool) {
+  return {
+    equipment: currentEquipment(character, catalog),
+    ...currentAbilities(character, pool),
+  };
 }
 
 function combinations(entries, count) {
@@ -334,10 +329,10 @@ function combinations(entries, count) {
   return result;
 }
 
-function cartesianEquipment(base, types, pools, fallbackEquipment) {
+function cartesianEquipment(base, types, pools) {
   let current = [base];
   for (const type of types) {
-    const choices = pools[type]?.length ? pools[type] : fallbackEquipment[type] ? [fallbackEquipment[type]] : [];
+    const choices = pools[type] || [];
     if (!choices.length) return [];
     current = current.flatMap((equipment) => choices.map((choice) => ({ ...equipment, [type]: choice })));
   }
@@ -397,10 +392,12 @@ function fixedPresence(pool, direction, monsterHrid, configuredRules) {
 }
 
 function abilitySets(template, pool, fixed, options) {
-  const auraChoices = fixed.aura ? [fixed.aura] : options.optimizeAura === false ? [template.aura] : pool.auraAbilities;
+  const auraChoices = fixed.aura ? [fixed.aura] : options.optimizeAura === false ? (template.aura ? [template.aura] : []) : pool.auraAbilities;
   if (!auraChoices.length) return [];
   if (options.optimizeActives === false) {
+    if (!Array.isArray(template.actives) || template.actives.length !== 4 || template.actives.some((entry) => !entry?.hrid)) return [];
     const hrids = new Set(template.actives.map((entry) => entry.hrid));
+    if (hrids.size !== 4) return [];
     if (fixed.requiredActives.some((entry) => !hrids.has(entry.hrid))) return [];
     if (fixed.zeroCooldown && !hrids.has(fixed.zeroCooldown.hrid)) return [];
     const ordered = fixed.zeroCooldown
@@ -433,29 +430,25 @@ export function orderedPlanKey(plan) {
   return `${unorderedPlanKey(plan)}::${(plan?.abilityOrder?.abilities || []).slice(1).map((entry) => entry.hrid).join(",")}`;
 }
 
-export function buildUniqueComponentPlans(templates, pool, direction, monsterHrid, options = {}) {
+export function buildUniqueComponentPlans(baseline, pool, direction, monsterHrid, options = {}) {
   const selectedTypes = new Set(options.selectedEquipmentTypes || []);
   const fixed = fixedPresence(pool, direction, monsterHrid, options.fixedAbilityRules);
   const all = [];
-  for (const template of templates) {
-    const fixedEquipment = Object.fromEntries(Object.entries(template.equipment).filter(([type]) => (
-      !selectedTypes.has(type) && !HAND_TYPES.has(type)
-    )));
-    const otherSelected = [...selectedTypes].filter((type) => !HAND_TYPES.has(type)).sort();
-    const equipmentCandidates = weaponStates(template, pool.equipmentPools, selectedTypes)
-      .flatMap((weapons) => cartesianEquipment({ ...fixedEquipment, ...weapons }, otherSelected, pool.equipmentPools, template.equipment));
-    const abilities = abilitySets(template, pool, fixed, options);
-    for (const equipment of equipmentCandidates) {
-      for (const selected of abilities) {
-        all.push({
-          sourcePreset: template.sourcePreset,
-          sourcePresetId: template.sourcePresetId,
-          direction,
-          zeroCooldownHrid: selected.zeroCooldownHrid,
-          equipmentCandidate: { equipment },
-          abilityOrder: { abilities: [selected.aura, ...selected.actives] },
-        });
-      }
+  const fixedEquipment = Object.fromEntries(Object.entries(baseline.equipment || {}).filter(([type]) => (
+    !selectedTypes.has(type) && !HAND_TYPES.has(type)
+  )));
+  const otherSelected = [...selectedTypes].filter((type) => !HAND_TYPES.has(type)).sort();
+  const equipmentCandidates = weaponStates(baseline, pool.equipmentPools, selectedTypes)
+    .flatMap((weapons) => cartesianEquipment({ ...fixedEquipment, ...weapons }, otherSelected, pool.equipmentPools));
+  const abilities = abilitySets(baseline, pool, fixed, options);
+  for (const equipment of equipmentCandidates) {
+    for (const selected of abilities) {
+      all.push({
+        direction,
+        zeroCooldownHrid: selected.zeroCooldownHrid,
+        equipmentCandidate: { equipment },
+        abilityOrder: { abilities: [selected.aura, ...selected.actives] },
+      });
     }
   }
   const unique = new Map();
