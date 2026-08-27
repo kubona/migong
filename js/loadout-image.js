@@ -34,7 +34,7 @@ export function officialIconMarkup(hrid, catalog, label = "") {
 
 export function equipmentGridRows(equipment = {}) {
   const twoHand = equipment["/equipment_types/two_hand"] || null;
-  const rows = EQUIPMENT_GRID_ORDER.map(([leftType, rightType], index) => {
+  return EQUIPMENT_GRID_ORDER.map(([leftType, rightType], index) => {
     if (index === 0 && twoHand) {
       return [
         { type: leftType, sourceType: "/equipment_types/two_hand", item: twoHand },
@@ -46,13 +46,6 @@ export function equipmentGridRows(equipment = {}) {
       { type: rightType, sourceType: rightType, item: equipment[rightType] || null },
     ];
   });
-  if (equipment["/equipment_types/charm"]) {
-    rows.push([
-      { type: "/equipment_types/charm", sourceType: "/equipment_types/charm", item: equipment["/equipment_types/charm"] },
-      { type: "", sourceType: "", item: null },
-    ]);
-  }
-  return rows;
 }
 
 function displayGearCell(cell, catalog, slotNames) {
@@ -122,6 +115,6 @@ export async function downloadLoadouts(results, catalog, slotNames, monsterNames
   const spriteText = await fetch(new URL(OFFICIAL_ITEM_SPRITE_MODULE_PATH, import.meta.url)).then((response) => { if (!response.ok) throw new Error(`官方图标读取失败（${response.status}）`); return response.text(); });
   const svg = buildLoadoutSvg(results, catalog, slotNames, monsterNames, spriteText);
   const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-  const anchor = document.createElement("a"); anchor.href = url; anchor.download = `mwi迷宫配装总表-v029-${new Date().toISOString().slice(0, 10)}.svg`; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = `mwi迷宫配装总表-v030-${new Date().toISOString().slice(0, 10)}.svg`; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
   return true;
 }

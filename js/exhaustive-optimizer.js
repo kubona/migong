@@ -6,6 +6,7 @@ import {
   buildTargetedComponentPool,
   buildUniqueComponentPlans,
 } from "./component-planner.js";
+import { resolveEquipmentPresetBaselines } from "./equipment-presets.js";
 import { buildSimulationInput } from "./player-dto.js";
 import { wilsonInterval } from "./statistics.js";
 
@@ -188,14 +189,28 @@ async function runDirectionWorkflow(options) {
     minimumEquipmentLevel: options.minimumEquipmentLevel,
     selectedEquipmentTypes: poolTypes,
   });
-  const baseline = buildCurrentBaseline(options.character, options.catalog, pool);
-  const plans = buildUniqueComponentPlans(baseline, pool, options.direction, options.monsterHrid, {
-    selectedEquipmentTypes: selectedTypes,
-    optimizeAura: options.optimizeAura,
-    optimizeActives: options.optimizeActives,
-    fixedAbilityRules: options.fixedAbilityRules,
-  }).map((plan) => enrichPlan(options.character, options.catalog, plan));
-  if (!plans.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有符合候选池、当前固定栏位和固定技能规则的组合`);
+  const abilityBaseline = buildCurrentBaseline(options.character, options.catalog, pool);
+  const equipmentBaselines = resolveEquipmentPresetBaselines(
+    options.character,
+    options.catalog,
+    options.direction,
+    options.monsterHrid,
+    { source: options.equipmentPresetSource, selectedEquipmentTypes: selectedTypes },
+  );
+  const uniquePlans = new Map();
+  for (const equipmentBaseline of equipmentBaselines) {
+    const baseline = { ...abilityBaseline, ...equipmentBaseline };
+    for (const plan of buildUniqueComponentPlans(baseline, pool, options.direction, options.monsterHrid, {
+      selectedEquipmentTypes: selectedTypes,
+      optimizeAura: options.optimizeAura,
+      optimizeActives: options.optimizeActives,
+      fixedAbilityRules: options.fixedAbilityRules,
+    })) {
+      if (!uniquePlans.has(plan.key)) uniquePlans.set(plan.key, plan);
+    }
+  }
+  const plans = [...uniquePlans.values()].map((plan) => enrichPlan(options.character, options.catalog, plan));
+  if (!plans.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有符合候选池、预设固定栏位和固定技能规则的组合`);
 
   const testResults = [];
   for (let index = 0; index < plans.length; index += 1) {
@@ -285,6 +300,7 @@ async function runDirectionWorkflow(options) {
     direction: options.direction,
     profile: options.profile,
     poolDiagnostics: pool.diagnostics,
+    equipmentPresetSource: options.equipmentPresetSource || "system",
     savedPlanCount: plans.length,
     testResults,
     bestTestLevel,
@@ -343,6 +359,7 @@ export async function optimizeMonsterExhaustive(options) {
       maxLevel,
       minimumEquipmentLevel: options.minimumEquipmentLevel ?? 80,
       selectedEquipmentTypes: options.optimizableEquipmentTypes || options.selectedEquipmentTypes || [],
+      equipmentPresetSource: options.equipmentPresetSource || "system",
       optimizeAura: options.optimizeAura !== false,
       optimizeActives: options.optimizeActives !== false,
       testTrials,
@@ -376,6 +393,7 @@ export async function optimizeMonsterExhaustive(options) {
     phaseTrials: { test: testTrials, review: reviewTrials, optimize: optimizeTrials },
     trialsPerPlan: optimizeTrials,
     minimumEquipmentLevel: options.minimumEquipmentLevel ?? 80,
+    equipmentPresetSource: options.equipmentPresetSource || "system",
     highestMonsterLevel: winner.optimizationLevel,
     highestLevel: winner.optimizationLevel,
     estimatedHighestFloorRange: monsterLevelToFloorRange(winner.optimizationLevel),
@@ -428,6 +446,7 @@ export async function optimizeMonsterExhaustive(options) {
     },
     searchPolicy: {
       method: "定向组件池 + 唯一全组合 + 两阶段完整二分 + 主动技能顺序优化",
+      equipmentPresetSource: options.equipmentPresetSource || "system",
       levelBounds: { minimum: minLevel, maximum: maxLevel },
       targetRate: options.targetRate || 0.7,
       reviewTolerance: "测试最高等级的 1%（向上取整为最低保留等级）",

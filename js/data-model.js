@@ -12,7 +12,6 @@ export const COMBAT_EQUIPMENT_TYPES = new Set([
   "/equipment_types/neck",
   "/equipment_types/earrings",
   "/equipment_types/ring",
-  "/equipment_types/charm",
 ]);
 
 export const LABYRINTH_MONSTER_HRIDS = [
@@ -125,6 +124,7 @@ function cleanWearableMap(raw) {
   if (!raw || typeof raw !== "object") return {};
   const result = {};
   for (const [slot, reference] of Object.entries(raw)) {
+    if (slot === "charm" || slot === "/item_locations/charm") continue;
     if (typeof reference === "string") {
       result[slot] = reference;
       continue;

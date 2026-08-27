@@ -155,7 +155,7 @@ export function createSimulationAuditRecorder(options = {}) {
     },
     exportPayload(extra = {}) {
       return {
-        reportType: "mwi_labyrinth_simulation_audit_v029",
+        reportType: "mwi_labyrinth_simulation_audit_v030",
         schemaVersion: 2,
         startedAt,
         exportedAt: new Date().toISOString(),

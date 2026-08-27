@@ -445,6 +445,8 @@ export function buildUniqueComponentPlans(baseline, pool, direction, monsterHrid
     for (const selected of abilities) {
       all.push({
         direction,
+        sourcePreset: baseline.sourcePreset || "",
+        sourcePresetId: baseline.sourcePresetId || "",
         zeroCooldownHrid: selected.zeroCooldownHrid,
         equipmentCandidate: { equipment },
         abilityOrder: { abilities: [selected.aura, ...selected.actives] },
