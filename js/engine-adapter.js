@@ -344,13 +344,15 @@ export function buildEngineWorkerSource(vendorChunkSource, workerChunkSource) {
   ].join("\n\n");
 }
 
-export function recommendedWorkerCount(logicalProcessors = globalThis.navigator?.hardwareConcurrency) {
+export function recommendedWorkerCount(logicalProcessors = globalThis.navigator?.hardwareConcurrency, resourceUtilization = 80) {
   const logical = Math.max(1, Math.floor(Number(logicalProcessors) || 4));
-  const reserved = logical >= 8 ? 4 : logical >= 4 ? 2 : 1;
-  // Worker 只占逻辑处理器的 65%，为页面主线程和系统负载预留 15% 余量，
-  // 使模拟器整体 CPU 使用率在正常调度下保持在用户要求的 80% 上限内。
-  const utilizationCap = Math.max(1, Math.floor(logical * 0.65));
-  return Math.max(1, Math.min(22, logical - reserved, utilizationCap));
+  const profile = [50, 80, 100].includes(Number(resourceUtilization)) ? Number(resourceUtilization) : 80;
+  // “100%”仍是安全满载：高线程桌面 CPU 至少给系统留下 4 个逻辑线程，
+  // 中低端 CPU 也始终保留 1–2 个逻辑线程，不会把所有处理器交给网页。
+  const reserved = logical >= 16 ? 4 : logical >= 8 ? 2 : 1;
+  const safeMaximum = Math.max(1, logical - reserved);
+  const requested = profile === 100 ? safeMaximum : Math.max(1, Math.floor(logical * profile / 100));
+  return Math.max(1, Math.min(safeMaximum, requested));
 }
 
 export function splitTrials(trials, workerCount, minimumTrialsPerWorker = 2) {

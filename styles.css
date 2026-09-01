@@ -124,7 +124,10 @@ button { min-height: 43px; padding: 0 18px; border-radius: 9px; cursor: pointer;
 .secondary-button { border: 1px solid var(--line-strong); background: transparent; color: var(--ink); }
 .run-status { color: var(--muted); font-size: 14px; }
 .run-note { grid-column: 1 / -1; color: var(--muted-low); font-size: 12px; }
-.progress-track { grid-column: 1 / -1; height: 5px; overflow: hidden; border-radius: 99px; background: var(--line-soft); }
+.run-time-status { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px 24px; color: var(--muted); font-size: 12px; }
+.run-time-status[hidden] { display: none; }
+.run-time-status strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.progress-track { grid-column: 1 / -1; height: 8px; overflow: hidden; border-radius: 99px; background: var(--line-soft); }
 .progress-track div { width: 0%; height: 100%; background: var(--gold); transition: width .2s ease; }
 .results-heading { display: flex; justify-content: space-between; align-items: end; margin-bottom: 18px; }
 .report-block { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }

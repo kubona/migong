@@ -1,4 +1,4 @@
-import { finiteNumber, monsterLevelToFloorRange, resolveReferenceMonsterLevel } from "./data-model.js";
+import { finiteNumber, monsterLevelToFloorRange } from "./data-model.js";
 import { classifyMonster } from "./classifier.js";
 import {
   activeOrderPermutations,
@@ -9,6 +9,7 @@ import {
 import { resolveEquipmentPresetBaselines } from "./equipment-presets.js";
 import { buildSimulationInput } from "./player-dto.js";
 import { wilsonInterval } from "./statistics.js";
+import { maximumBinaryProbeCount } from "./progress-metrics.js";
 
 const MAIN_HAND = "/equipment_types/main_hand";
 const OFF_HAND = "/equipment_types/off_hand";
@@ -16,6 +17,31 @@ const TWO_HAND = "/equipment_types/two_hand";
 
 function checkAbort(signal) {
   if (signal?.aborted) throw new DOMException("模拟已取消", "AbortError");
+}
+
+export function recommendedPlanConcurrency(workerCount, trials, itemCount = Infinity) {
+  const workers = Math.max(1, Math.floor(finiteNumber(workerCount, 1)));
+  const requestedTrials = Math.max(1, Math.floor(finiteNumber(trials, 1)));
+  const availableItems = Math.max(1, Math.floor(finiteNumber(itemCount, 1)));
+  const shardsPerPlan = Math.max(1, Math.min(workers, requestedTrials, Math.ceil(requestedTrials / 2)));
+  // 多留一条方案流水线，让较快 Worker 在同批较慢分片结束前领取下一套配装的任务。
+  return Math.min(availableItems, 16, Math.max(1, Math.ceil(workers / shardsPerPlan) + 1));
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const source = Array.isArray(items) ? items : [];
+  if (!source.length) return [];
+  const results = new Array(source.length);
+  let cursor = 0;
+  const run = async () => {
+    while (cursor < source.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(source[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(source.length, Math.max(1, concurrency)) }, run));
+  return results;
 }
 
 function directionProfile(profile, direction) {
@@ -212,9 +238,16 @@ async function runDirectionWorkflow(options) {
   const plans = [...uniquePlans.values()].map((plan) => enrichPlan(options.character, options.catalog, plan));
   if (!plans.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有符合候选池、预设固定栏位和固定技能规则的组合`);
 
-  const testResults = [];
-  for (let index = 0; index < plans.length; index += 1) {
-    const plan = plans[index];
+  let testCompletedPlans = 0;
+  const binaryProbeBudget = maximumBinaryProbeCount(options.minLevel, options.maxLevel);
+  const testEstimatedBatches = plans.length * binaryProbeBudget;
+  let testCompletedBatches = 0;
+  const testPlanConcurrency = recommendedPlanConcurrency(options.engine?.workerCount, options.testTrials, plans.length);
+  options.onProgress?.({
+    phase: "test", direction: options.direction, completedPlans: 0, totalPlans: plans.length,
+    currentPlan: 1, phaseCompletedBatches: 0, phaseTotalBatches: testEstimatedBatches,
+  });
+  const testResults = await mapWithConcurrency(plans, testPlanConcurrency, async (plan, index) => {
     const result = await searchHighestLevelForPlan({
       ...options,
       plan,
@@ -223,27 +256,40 @@ async function runDirectionWorkflow(options) {
       seedBase: options.seedBase + 100000,
       planId: `T${index + 1}`,
       expectedRetest: options.directionIndex > 1,
-      onProbe: ({ level, probeCount }) => options.onProgress?.({
-        phase: "test",
-        direction: options.direction,
-        completedPlans: index,
-        totalPlans: plans.length,
-        currentPlan: index + 1,
-        level,
-        probeCount,
-      }),
+      onProbe: ({ level, probeCount }) => {
+        testCompletedBatches += 1;
+        options.onProgress?.({
+          phase: "test",
+          direction: options.direction,
+          completedPlans: testCompletedPlans,
+          totalPlans: plans.length,
+          currentPlan: index + 1,
+          level,
+          probeCount,
+          phaseCompletedBatches: testCompletedBatches,
+          phaseTotalBatches: testEstimatedBatches,
+        });
+      },
     });
-    testResults.push(result);
-    options.onProgress?.({ phase: "test", direction: options.direction, completedPlans: index + 1, totalPlans: plans.length, currentPlan: index + 1 });
-  }
+    testCompletedPlans += 1;
+    options.onProgress?.({ phase: "test", direction: options.direction, completedPlans: testCompletedPlans, totalPlans: plans.length, currentPlan: index + 1, phaseCompletedBatches: testCompletedBatches, phaseTotalBatches: testEstimatedBatches });
+    return result;
+  });
+  options.onProgress?.({ phase: "test", direction: options.direction, completedPlans: plans.length, totalPlans: plans.length, currentPlan: plans.length, phaseCompletedBatches: testCompletedBatches, phaseTotalBatches: testCompletedBatches, phaseComplete: true });
 
   const bestTestLevel = Math.max(...testResults.filter((entry) => entry.targetMet).map((entry) => entry.highestLevel), 0);
   const reviewFloor = bestTestLevel > 0 ? Math.ceil(bestTestLevel * 0.99) : options.minLevel;
   const reviewCandidates = testResults.filter((entry) => entry.targetMet && entry.highestLevel >= reviewFloor);
   if (!reviewCandidates.length) reviewCandidates.push(...testResults.sort(compareAtHighest).slice(0, 1));
-  const reviewResults = [];
-  for (let index = 0; index < reviewCandidates.length; index += 1) {
-    const candidate = reviewCandidates[index];
+  const reviewEstimatedBatches = reviewCandidates.length * binaryProbeBudget;
+  let reviewCompletedBatches = 0;
+  let reviewCompletedPlans = 0;
+  const reviewPlanConcurrency = recommendedPlanConcurrency(options.engine?.workerCount, options.reviewTrials, reviewCandidates.length);
+  options.onProgress?.({
+    phase: "review", direction: options.direction, completedPlans: 0, totalPlans: reviewCandidates.length,
+    currentPlan: 1, phaseCompletedBatches: 0, phaseTotalBatches: reviewEstimatedBatches,
+  });
+  const reviewResults = await mapWithConcurrency(reviewCandidates, reviewPlanConcurrency, async (candidate, index) => {
     const result = await searchHighestLevelForPlan({
       ...options,
       plan: candidate.plan,
@@ -252,19 +298,26 @@ async function runDirectionWorkflow(options) {
       seedBase: options.seedBase + 300000,
       planId: `R${index + 1}`,
       expectedRetest: true,
-      onProbe: ({ level, probeCount }) => options.onProgress?.({
-        phase: "review",
-        direction: options.direction,
-        completedPlans: index,
-        totalPlans: reviewCandidates.length,
-        currentPlan: index + 1,
-        level,
-        probeCount,
-      }),
+      onProbe: ({ level, probeCount }) => {
+        reviewCompletedBatches += 1;
+        options.onProgress?.({
+          phase: "review",
+          direction: options.direction,
+          completedPlans: reviewCompletedPlans,
+          totalPlans: reviewCandidates.length,
+          currentPlan: index + 1,
+          level,
+          probeCount,
+          phaseCompletedBatches: reviewCompletedBatches,
+          phaseTotalBatches: reviewEstimatedBatches,
+        });
+      },
     });
-    reviewResults.push(result);
-    options.onProgress?.({ phase: "review", direction: options.direction, completedPlans: index + 1, totalPlans: reviewCandidates.length, currentPlan: index + 1 });
-  }
+    reviewCompletedPlans += 1;
+    options.onProgress?.({ phase: "review", direction: options.direction, completedPlans: reviewCompletedPlans, totalPlans: reviewCandidates.length, currentPlan: index + 1, phaseCompletedBatches: reviewCompletedBatches, phaseTotalBatches: reviewEstimatedBatches });
+    return result;
+  });
+  options.onProgress?.({ phase: "review", direction: options.direction, completedPlans: reviewCandidates.length, totalPlans: reviewCandidates.length, currentPlan: reviewCandidates.length, phaseCompletedBatches: reviewCompletedBatches, phaseTotalBatches: reviewCompletedBatches, phaseComplete: true });
   reviewResults.sort(compareAtHighest);
   const finalists = reviewResults.slice(0, 5);
   const optimizationLevel = Math.max(...finalists.filter((entry) => entry.targetMet).map((entry) => entry.highestLevel), finalists[0]?.highestLevel || options.minLevel);
@@ -276,9 +329,10 @@ async function runDirectionWorkflow(options) {
     }
   }
   const orderedPlans = [...orderedMap.values()];
-  const optimized = [];
-  for (let index = 0; index < orderedPlans.length; index += 1) {
-    const plan = orderedPlans[index];
+  let optimizeCompletedPlans = 0;
+  const optimizePlanConcurrency = recommendedPlanConcurrency(options.engine?.workerCount, options.optimizeTrials, orderedPlans.length);
+  options.onProgress?.({ phase: "optimize", direction: options.direction, completedPlans: 0, totalPlans: orderedPlans.length, currentPlan: 1, level: optimizationLevel, phaseCompletedBatches: 0, phaseTotalBatches: orderedPlans.length });
+  const optimized = await mapWithConcurrency(orderedPlans, optimizePlanConcurrency, async (plan, index) => {
     const result = await simulatePlan({
       ...options,
       plan,
@@ -291,9 +345,10 @@ async function runDirectionWorkflow(options) {
       reason: `优化阶段固定 Lv.${optimizationLevel} 测试主动技能顺序`,
       candidateKind: "ordered_active_plan",
     });
-    optimized.push({ plan, result, metrics: resultMetrics(result), monsterLevel: optimizationLevel, direction: options.direction });
-    options.onProgress?.({ phase: "optimize", direction: options.direction, completedPlans: index + 1, totalPlans: orderedPlans.length, currentPlan: index + 1, level: optimizationLevel });
-  }
+    optimizeCompletedPlans += 1;
+    options.onProgress?.({ phase: "optimize", direction: options.direction, completedPlans: optimizeCompletedPlans, totalPlans: orderedPlans.length, currentPlan: index + 1, level: optimizationLevel, phaseCompletedBatches: optimizeCompletedPlans, phaseTotalBatches: orderedPlans.length, phaseComplete: optimizeCompletedPlans === orderedPlans.length });
+    return { plan, result, metrics: resultMetrics(result), monsterLevel: optimizationLevel, direction: options.direction };
+  });
   const winRateRanking = withRank([...optimized].sort(compareWinRate).slice(0, 3));
   const speedRanking = withRank([...optimized].sort(compareSpeed).slice(0, 3));
   return {
@@ -328,14 +383,17 @@ function diagnose(result) {
 
 export async function optimizeMonsterExhaustive(options) {
   const { character, catalog, engine, monsterHrid } = options;
-  const referenceLevel = Math.max(20, Math.floor(finiteNumber(options.referenceMonsterLevel, resolveReferenceMonsterLevel(character))));
+  // Weakness ranking is level-invariant: all compared evasion/resistance values
+  // use the same positive level factor. Keep a neutral internal scale only for
+  // constructing the diagnostic values shown in the report.
+  const classificationLevel = 100;
   const minLevel = Math.max(1, Math.floor(finiteNumber(options.minMonsterLevel ?? options.minLevel, 20)));
-  const maxLevel = Math.max(minLevel, Math.floor(finiteNumber(options.maxMonsterLevel ?? options.maxLevel, referenceLevel + 40)));
+  const maxLevel = Math.max(minLevel, Math.floor(finiteNumber(options.maxMonsterLevel ?? options.maxLevel, 300)));
   const testTrials = Math.max(1, Math.floor(finiteNumber(options.testTrials, 100)));
   const reviewTrials = Math.max(1, Math.floor(finiteNumber(options.reviewTrials, 300)));
   const optimizeTrials = Math.max(1, Math.floor(finiteNumber(options.optimizeTrials, 500)));
   const fullProfile = classifyMonster(catalog?.combatMonsterDetailMap?.[monsterHrid], {
-    roomLevel: referenceLevel,
+    roomLevel: classificationLevel,
     playerCombatDetails: character?.combatDetails,
   });
   const intelligence = character?.characterSkills?.find((entry) => entry.skillHrid === "/skills/intelligence")?.level || 1;
@@ -386,10 +444,6 @@ export async function optimizeMonsterExhaustive(options) {
     name: fullProfile.name,
     profile: fullProfile,
     chosenDirection: winner.direction,
-    requestedReferenceMonsterLevel: referenceLevel,
-    referenceMonsterLevel: referenceLevel,
-    referenceLevel,
-    referenceFloorRange: monsterLevelToFloorRange(referenceLevel),
     phaseTrials: { test: testTrials, review: reviewTrials, optimize: optimizeTrials },
     trialsPerPlan: optimizeTrials,
     minimumEquipmentLevel: options.minimumEquipmentLevel ?? 80,

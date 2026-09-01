@@ -41,14 +41,18 @@ export function summarizeSimulationLoadout(input, resolveName = null) {
   return { equipment, abilities, combatLevels };
 }
 
-export function simulationCombinationSignature(input) {
+export function simulationLoadoutSignature(input) {
   const loadout = summarizeSimulationLoadout(input);
   const gear = loadout.equipment.map((item) => `${item.slot}=${item.hrid}@${item.enhancementLevel}`).join("|");
   const abilities = loadout.abilities.map((ability) => (
     `${ability.slot}=${ability.hrid}@${ability.level}:${triggerSignature(ability)}`
   )).join("|");
   const levels = Object.entries(loadout.combatLevels).map(([field, value]) => `${field}=${value}`).join("|");
-  return `${input?.monsterHrid || ""}::${number(input?.roomLevel, 0)}::${gear}::${abilities}::${levels}`;
+  return `${input?.monsterHrid || ""}::${gear}::${abilities}::${levels}`;
+}
+
+export function simulationCombinationSignature(input) {
+  return `${simulationLoadoutSignature(input)}::Lv.${number(input?.roomLevel, 0)}`;
 }
 
 function summarizeResult(run, requestedTrials) {
@@ -87,6 +91,7 @@ export function createSimulationAuditRecorder(options = {}) {
     async simulate(engine, input, context = {}) {
       const sequence = nextSequence++;
       const combinationSignature = simulationCombinationSignature(input);
+      const loadoutSignature = simulationLoadoutSignature(input);
       const repeatIndex = (repeats.get(combinationSignature) || 0) + 1;
       repeats.set(combinationSignature, repeatIndex);
       const beganAt = Date.now();
@@ -108,6 +113,7 @@ export function createSimulationAuditRecorder(options = {}) {
         direction: context.direction || null,
         changedDimensions: [...(context.changedDimensions || [])],
         combinationSignature,
+        loadoutSignature,
         repeatIndex,
         isRepeatedCombination: repeatIndex > 1,
         expectedRetest: Boolean(context.expectedRetest),
@@ -140,22 +146,37 @@ export function createSimulationAuditRecorder(options = {}) {
     summary(filter = {}) {
       const selected = records.filter((record) => !filter.monsterHrid || record.monsterHrid === filter.monsterHrid);
       const byStage = {};
-      for (const record of selected) byStage[record.stage] = (byStage[record.stage] || 0) + 1;
+      const stageSummary = {};
+      for (const record of selected) {
+        byStage[record.stage] = (byStage[record.stage] || 0) + 1;
+        stageSummary[record.stage] ||= { batches: 0, completedTrials: 0, loadoutSignatures: new Set() };
+        stageSummary[record.stage].batches += 1;
+        stageSummary[record.stage].completedTrials += record.status === "completed" ? Math.max(0, Math.floor(number(record.result?.trials, 0))) : 0;
+        stageSummary[record.stage].loadoutSignatures.add(record.loadoutSignature);
+      }
       return {
         startedAt,
         actualSimulationBatches: selected.length,
         completedBatches: selected.filter((record) => record.status === "completed").length,
         failedBatches: selected.filter((record) => record.status === "failed").length,
         uniqueCombinations: new Set(selected.map((record) => record.combinationSignature)).size,
+        uniqueLoadouts: new Set(selected.map((record) => record.loadoutSignature)).size,
+        requestedTrials: selected.reduce((sum, record) => sum + Math.max(0, number(record.trialsRequested, 0)), 0),
+        completedTrials: selected.reduce((sum, record) => sum + (record.status === "completed" ? Math.max(0, number(record.result?.trials, 0)) : 0), 0),
         repeatedBatches: selected.filter((record) => record.isRepeatedCombination).length,
         expectedRetestBatches: selected.filter((record) => record.repeatClassification === "expected_retest").length,
         suspiciousRepeatBatches: selected.filter((record) => record.repeatClassification === "suspicious_repeat").length,
         byStage,
+        stageSummary: Object.fromEntries(Object.entries(stageSummary).map(([stage, entry]) => [stage, {
+          batches: entry.batches,
+          completedTrials: entry.completedTrials,
+          uniqueLoadouts: entry.loadoutSignatures.size,
+        }])),
       };
     },
     exportPayload(extra = {}) {
       return {
-        reportType: "mwi_labyrinth_simulation_audit_v030",
+        reportType: "mwi_labyrinth_simulation_audit_v032",
         schemaVersion: 2,
         startedAt,
         exportedAt: new Date().toISOString(),

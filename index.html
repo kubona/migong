@@ -44,11 +44,11 @@
       <summary class="section-heading"><span class="step">3</span><strong id="settings-title">模拟设置</strong><span class="collapse-label"></span></summary>
       <div class="panel-content">
         <div class="settings-grid">
-          <label>参考等级<input id="reference-monster-level" type="number" min="20" max="5000" value="240"></label>
-          <label>等级下限<input id="min-monster-level" type="number" min="1" max="5000" value="20"></label>
+          <label>等级下限<input id="min-monster-level" type="number" min="1" max="5000" value="200"></label>
           <label>等级上限<input id="max-monster-level" type="number" min="1" max="5000" value="300"></label>
           <label>目标胜率<input id="target-rate" type="number" min="1" max="99" value="70"><span class="suffix">%</span></label>
           <label>预设配装<select id="equipment-preset-source"><option value="system" selected>系统预设配装</option><option value="personal">个人预设配装</option></select></label>
+          <label>资源占用<select id="resource-utilization"><option value="50">50%</option><option value="80" selected>80%</option><option value="100">100%（安全满载）</option></select></label>
           <label>并行怪物数<select id="parallel-count"></select></label>
           <label>测试次数<input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
           <label>复核次数<input id="review-trials" type="number" min="10" max="10000" step="10" value="300"></label>
@@ -63,7 +63,8 @@
       <button id="cancel-button" class="secondary-button" hidden>停止</button>
       <div class="run-status" id="run-status">请先加载两份数据</div>
       <div class="run-note" id="audit-status" hidden></div>
-      <div class="progress-track" id="progress-track" hidden><div id="progress-bar"></div></div>
+      <div class="run-time-status" id="run-time-status" hidden><span>流程进度 <strong id="progress-percent">0.0%</strong></span><span>运行时间 <strong id="elapsed-time">0秒</strong></span><span>预估剩余时间 <strong id="remaining-time">计算中</strong></span></div>
+      <div class="progress-track" id="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div id="progress-bar"></div></div>
     </section>
 
     <section id="results-section" class="results" hidden aria-labelledby="results-title">

@@ -115,6 +115,6 @@ export async function downloadLoadouts(results, catalog, slotNames, monsterNames
   const spriteText = await fetch(new URL(OFFICIAL_ITEM_SPRITE_MODULE_PATH, import.meta.url)).then((response) => { if (!response.ok) throw new Error(`官方图标读取失败（${response.status}）`); return response.text(); });
   const svg = buildLoadoutSvg(results, catalog, slotNames, monsterNames, spriteText);
   const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-  const anchor = document.createElement("a"); anchor.href = url; anchor.download = `mwi迷宫配装总表-v030-${new Date().toISOString().slice(0, 10)}.svg`; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = `mwi迷宫配装总表-v032-${new Date().toISOString().slice(0, 10)}.svg`; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
   return true;
 }
