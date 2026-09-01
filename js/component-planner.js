@@ -35,7 +35,7 @@ const COUNTER_BUFFS = new Set([
 ]);
 
 function directionCategory(direction, monsterHrid) {
-  if (monsterHrid === "/monsters/mimic" || direction?.strategyId === "retaliation_thorns") return "mimic";
+  if (direction?.strategyId === "retaliation_thorns") return "mimic";
   return direction?.styleHrid === "/combat_styles/magic" ? "magic" : "physical";
 }
 
@@ -352,18 +352,21 @@ function weaponStates(template, pools, selectedTypes) {
     if (generated.length) return generated;
   } else if (mainSelected) {
     const fixedOff = template.equipment[OFF_HAND];
-    if (fixedOff) {
-      const generated = mainPool.map((main) => ({ [MAIN_HAND]: main, [OFF_HAND]: fixedOff }));
-      if (generated.length) return generated;
-    }
-    return [];
+    const paired = fixedOff
+      ? mainPool.map((main) => ({ [MAIN_HAND]: main, [OFF_HAND]: fixedOff }))
+      : [];
+    const twoHanded = twoPool.map((weapon) => ({ [TWO_HAND]: weapon }));
+    const generated = [...paired, ...twoHanded];
+    if (generated.length) return generated;
   } else if (offSelected) {
     const fixedMain = template.equipment[MAIN_HAND];
     if (fixedMain) {
       const generated = offPool.map((off) => ({ [MAIN_HAND]: fixedMain, [OFF_HAND]: off }));
       if (generated.length) return generated;
     }
-    return [];
+    // A two-hand system preset cannot equip an off-hand item. Keep its fixed
+    // weapon branch intact when only the off-hand slot is selected.
+    if (template.equipment[TWO_HAND]) return [{ [TWO_HAND]: template.equipment[TWO_HAND] }];
   }
   if (template.equipment[TWO_HAND]) return [{ [TWO_HAND]: template.equipment[TWO_HAND] }];
   if (template.equipment[MAIN_HAND] && template.equipment[OFF_HAND]) {

@@ -6,7 +6,11 @@ import {
   buildTargetedComponentPool,
   buildUniqueComponentPlans,
 } from "./component-planner.js";
-import { resolveEquipmentPresetBaselines } from "./equipment-presets.js";
+import {
+  SIMULATION_DIRECTION_AUTO,
+  manualSimulationDirection,
+  resolveEquipmentPresetBaselines,
+} from "./equipment-presets.js";
 import { buildSimulationInput } from "./player-dto.js";
 import { wilsonInterval } from "./statistics.js";
 import { maximumBinaryProbeCount } from "./progress-metrics.js";
@@ -45,13 +49,28 @@ async function mapWithConcurrency(items, concurrency, mapper) {
 }
 
 function directionProfile(profile, direction) {
+  const specialStrategy = direction?.strategyId === "retaliation_thorns"
+    ? { ...(profile.specialStrategy || {}), id: direction.strategyId, zh: direction.strategyZh || "反伤·荆棘" }
+    : direction?.selectionMode === "manual" ? null : profile.specialStrategy;
   return {
     ...profile,
-    selectedStyles: profile.selectedStyles.filter((entry) => entry.hrid === direction.styleHrid),
+    selectedStyles: profile.styles.filter((entry) => entry.hrid === direction.styleHrid),
     selectedStyleHrids: new Set([direction.styleHrid]),
     selectedDirections: [direction],
     preferredDamageTypes: profile.damageTypes.filter((entry) => entry.hrid === direction.damageTypeHrid),
+    specialStrategy,
   };
+}
+
+export function resolveSimulationDirections(profile, selection = SIMULATION_DIRECTION_AUTO) {
+  if (selection && selection !== SIMULATION_DIRECTION_AUTO) {
+    const manual = manualSimulationDirection(selection);
+    if (!manual) throw new Error(`未知模拟方向：${selection}`);
+    return [manual];
+  }
+  const primary = profile?.selectedDirections?.[0];
+  if (!primary) throw new Error("怪物没有可用的第一弱点方向");
+  return [{ ...primary, selectionMode: "auto", presetLabel: "自动最优" }];
 }
 
 function normalizeSimulation(run, requestedTrials) {
@@ -210,7 +229,7 @@ function withRank(entries) {
 async function runDirectionWorkflow(options) {
   const selectedTypes = new Set(options.selectedEquipmentTypes || []);
   const poolTypes = new Set(selectedTypes);
-  if (selectedTypes.has(MAIN_HAND) && selectedTypes.has(OFF_HAND)) poolTypes.add(TWO_HAND);
+  if (selectedTypes.has(MAIN_HAND)) poolTypes.add(TWO_HAND);
   const pool = buildTargetedComponentPool(options.character, options.catalog, options.profile, options.direction, {
     minimumEquipmentLevel: options.minimumEquipmentLevel,
     selectedEquipmentTypes: poolTypes,
@@ -400,9 +419,11 @@ export async function optimizeMonsterExhaustive(options) {
   const requirements = catalog?.abilitySlotsLevelRequirementList || [0, 1, 1, 20, 50, 90];
   if (intelligence < finiteNumber(requirements[5], 90)) throw new Error(`${fullProfile.name}：尚未解锁 1 个特殊技能和 4 个普通主动技能槽`);
 
+  const simulationDirectionSelection = options.simulationDirection || SIMULATION_DIRECTION_AUTO;
+  const simulationDirections = resolveSimulationDirections(fullProfile, simulationDirectionSelection);
   const directionResults = [];
-  for (let index = 0; index < fullProfile.selectedDirections.length; index += 1) {
-    const direction = fullProfile.selectedDirections[index];
+  for (let index = 0; index < simulationDirections.length; index += 1) {
+    const direction = simulationDirections[index];
     const profile = directionProfile(fullProfile, direction);
     const workflow = await runDirectionWorkflow({
       ...options,
@@ -427,7 +448,7 @@ export async function optimizeMonsterExhaustive(options) {
       seedBase: finiteNumber(options.seedBase, 20260826) + index * 1000000,
       signal: options.signal,
       auditRecorder: options.auditRecorder,
-      onProgress: (progress) => options.onProgress?.({ ...progress, monsterHrid, directionIndex: index + 1, directionCount: fullProfile.selectedDirections.length }),
+      onProgress: (progress) => options.onProgress?.({ ...progress, monsterHrid, directionIndex: index + 1, directionCount: simulationDirections.length }),
     });
     directionResults.push(workflow);
   }
@@ -443,6 +464,8 @@ export async function optimizeMonsterExhaustive(options) {
     monsterHrid,
     name: fullProfile.name,
     profile: fullProfile,
+    simulationDirectionSelection,
+    simulationDirectionMode: simulationDirectionSelection === SIMULATION_DIRECTION_AUTO ? "auto" : "manual",
     chosenDirection: winner.direction,
     phaseTrials: { test: testTrials, review: reviewTrials, optimize: optimizeTrials },
     trialsPerPlan: optimizeTrials,
@@ -500,6 +523,7 @@ export async function optimizeMonsterExhaustive(options) {
     },
     searchPolicy: {
       method: "定向组件池 + 唯一全组合 + 两阶段完整二分 + 主动技能顺序优化",
+      simulationDirection: simulationDirectionSelection,
       equipmentPresetSource: options.equipmentPresetSource || "system",
       levelBounds: { minimum: minLevel, maximum: maxLevel },
       targetRate: options.targetRate || 0.7,

@@ -7,6 +7,38 @@ const OFF_HAND = "/equipment_types/off_hand";
 const TWO_HAND = "/equipment_types/two_hand";
 const CHARM = "/equipment_types/charm";
 
+export const SIMULATION_DIRECTION_AUTO = "auto";
+
+export const SIMULATION_DIRECTION_OPTIONS = Object.freeze([
+  Object.freeze({ value: SIMULATION_DIRECTION_AUTO, label: "自动最优" }),
+  Object.freeze({ value: "slash", label: "斩击" }),
+  Object.freeze({ value: "smash", label: "钝击" }),
+  Object.freeze({ value: "stab", label: "刺击" }),
+  Object.freeze({ value: "ranged_bow", label: "弓" }),
+  Object.freeze({ value: "ranged_crossbow", label: "弩" }),
+  Object.freeze({ value: "water", label: "水" }),
+  Object.freeze({ value: "fire", label: "火" }),
+  Object.freeze({ value: "nature", label: "自然" }),
+  Object.freeze({ value: "counter", label: "反伤" }),
+]);
+
+const PRESET_DIRECTION_DEFINITIONS = Object.freeze({
+  slash: Object.freeze({ styleId: "slash", styleHrid: "/combat_styles/slash", styleZh: "斩击", damageTypeId: "physical", damageTypeHrid: "/damage_types/physical", damageTypeZh: "物理" }),
+  smash: Object.freeze({ styleId: "smash", styleHrid: "/combat_styles/smash", styleZh: "重击", damageTypeId: "physical", damageTypeHrid: "/damage_types/physical", damageTypeZh: "物理" }),
+  stab: Object.freeze({ styleId: "stab", styleHrid: "/combat_styles/stab", styleZh: "刺击", damageTypeId: "physical", damageTypeHrid: "/damage_types/physical", damageTypeZh: "物理" }),
+  ranged_bow: Object.freeze({ styleId: "ranged", styleHrid: "/combat_styles/ranged", styleZh: "远程", damageTypeId: "physical", damageTypeHrid: "/damage_types/physical", damageTypeZh: "物理" }),
+  ranged_crossbow: Object.freeze({ styleId: "ranged", styleHrid: "/combat_styles/ranged", styleZh: "远程", damageTypeId: "physical", damageTypeHrid: "/damage_types/physical", damageTypeZh: "物理" }),
+  water: Object.freeze({ styleId: "magic", styleHrid: "/combat_styles/magic", styleZh: "魔法", damageTypeId: "water", damageTypeHrid: "/damage_types/water", damageTypeZh: "水" }),
+  fire: Object.freeze({ styleId: "magic", styleHrid: "/combat_styles/magic", styleZh: "魔法", damageTypeId: "fire", damageTypeHrid: "/damage_types/fire", damageTypeZh: "火" }),
+  nature: Object.freeze({ styleId: "magic", styleHrid: "/combat_styles/magic", styleZh: "魔法", damageTypeId: "nature", damageTypeHrid: "/damage_types/nature", damageTypeZh: "自然" }),
+  counter: Object.freeze({ styleId: "smash", styleHrid: "/combat_styles/smash", styleZh: "重击", damageTypeId: "physical", damageTypeHrid: "/damage_types/physical", damageTypeZh: "物理", strategyId: "retaliation_thorns", strategyZh: "反伤·荆棘" }),
+});
+
+const PRESET_LABELS = Object.freeze(Object.fromEntries(
+  SIMULATION_DIRECTION_OPTIONS.filter((entry) => entry.value !== SIMULATION_DIRECTION_AUTO)
+    .map((entry) => [entry.value, entry.label]),
+));
+
 export const EQUIPMENT_PRESET_SOURCE = Object.freeze({
   system: "system",
   personal: "personal",
@@ -51,8 +83,19 @@ export const SYSTEM_EQUIPMENT_PRESETS = Object.freeze({
   slash: physicalPreset("/items/regal_sword"),
   smash: physicalPreset("/items/chaotic_flail"),
   stab: physicalPreset("/items/furious_spear"),
-  ranged: Object.freeze({
+  ranged_bow: Object.freeze({
     [TWO_HAND]: "/items/cursed_bow",
+    "/equipment_types/head": "/items/acrobatic_hood",
+    "/equipment_types/body": "/items/kraken_tunic",
+    "/equipment_types/legs": "/items/kraken_chaps",
+    "/equipment_types/hands": "/items/marksman_bracers",
+    "/equipment_types/feet": "/items/pathfinder_boots",
+    "/equipment_types/back": "/items/chimerical_quiver",
+    ...COMMON_ACCESSORIES,
+  }),
+  ranged_crossbow: Object.freeze({
+    [MAIN_HAND]: "/items/sundering_crossbow",
+    [OFF_HAND]: "/items/manticore_shield",
     "/equipment_types/head": "/items/acrobatic_hood",
     "/equipment_types/body": "/items/kraken_tunic",
     "/equipment_types/legs": "/items/kraken_chaps",
@@ -76,10 +119,17 @@ export const SYSTEM_EQUIPMENT_PRESETS = Object.freeze({
   }),
 });
 
-function presetKey(direction, monsterHrid) {
+export function manualSimulationDirection(selection) {
+  const definition = PRESET_DIRECTION_DEFINITIONS[selection];
+  if (!definition) return null;
+  return { ...definition, presetId: selection, presetLabel: PRESET_LABELS[selection], selectionMode: "manual" };
+}
+
+function automaticPresetKeys(direction, monsterHrid) {
   if (monsterHrid === "/monsters/mimic" || direction?.strategyId === "retaliation_thorns") return "counter";
   const style = String(direction?.styleHrid || "").split("/").pop();
-  if (["slash", "smash", "stab", "ranged"].includes(style)) return style;
+  if (["slash", "smash", "stab"].includes(style)) return style;
+  if (style === "ranged") return ["ranged_bow", "ranged_crossbow"];
   if (style === "magic") {
     const damage = String(direction?.damageTypeHrid || "").split("/").pop();
     if (["water", "fire", "nature"].includes(damage)) return damage;
@@ -166,23 +216,16 @@ function strongestOwnedFamily(character, catalog, type, configuredFamily) {
   return best;
 }
 
-function isSelectedSystemSlot(type, selectedTypes) {
-  if (selectedTypes.has(type)) return true;
-  return type === TWO_HAND && selectedTypes.has(MAIN_HAND) && selectedTypes.has(OFF_HAND);
-}
-
-function systemBaseline(character, catalog, direction, monsterHrid, selectedEquipmentTypes) {
-  const key = presetKey(direction, monsterHrid);
+function systemBaseline(character, catalog, key) {
   const preset = SYSTEM_EQUIPMENT_PRESETS[key];
-  const selectedTypes = new Set(selectedEquipmentTypes || []);
   const equipment = {};
   for (const [type, configuredFamily] of Object.entries(preset)) {
-    if (type === CHARM || isSelectedSystemSlot(type, selectedTypes)) continue;
+    if (type === CHARM) continue;
     const entry = strongestOwnedFamily(character, catalog, type, configuredFamily);
     if (!entry) throw new Error(`系统预设“${key}”缺少已拥有装备：${configuredFamily}`);
     equipment[type] = entry;
   }
-  return { sourcePreset: `系统预设·${key}`, sourcePresetId: `system:${key}`, equipment };
+  return { sourcePreset: `系统预设·${PRESET_LABELS[key] || key}`, sourcePresetId: `system:${key}`, equipment };
 }
 
 function parseItemReference(reference) {
@@ -258,9 +301,25 @@ function personalBaselines(character, catalog, direction, monsterHrid) {
 }
 
 export function resolveEquipmentPresetBaselines(character, catalog, direction, monsterHrid, options = {}) {
-  const source = options.source === EQUIPMENT_PRESET_SOURCE.personal
+  // Manual directions name one of the nine system presets explicitly. The
+  // personal-preset source remains available to automatic analysis only.
+  const source = !direction?.presetId && options.source === EQUIPMENT_PRESET_SOURCE.personal
     ? EQUIPMENT_PRESET_SOURCE.personal
     : EQUIPMENT_PRESET_SOURCE.system;
   if (source === EQUIPMENT_PRESET_SOURCE.personal) return personalBaselines(character, catalog, direction, monsterHrid);
-  return [systemBaseline(character, catalog, direction, monsterHrid, options.selectedEquipmentTypes)];
+  const keys = direction?.presetId
+    ? [direction.presetId]
+    : [automaticPresetKeys(direction, monsterHrid)].flat();
+  if (direction?.presetId || keys.length === 1) return keys.map((key) => systemBaseline(character, catalog, key));
+  const baselines = [];
+  const errors = [];
+  for (const key of keys) {
+    try {
+      baselines.push(systemBaseline(character, catalog, key));
+    } catch (error) {
+      errors.push(error.message);
+    }
+  }
+  if (!baselines.length) throw new Error(errors.join("；"));
+  return baselines;
 }
