@@ -329,14 +329,16 @@ function combinations(entries, count) {
   return result;
 }
 
-function cartesianEquipment(base, types, pools) {
-  let current = [base];
-  for (const type of types) {
-    const choices = pools[type] || [];
-    if (!choices.length) return [];
-    current = current.flatMap((equipment) => choices.map((choice) => ({ ...equipment, [type]: choice })));
+function* cartesianEquipment(base, types, pools, index = 0) {
+  if (index >= types.length) {
+    yield base;
+    return;
   }
-  return current;
+  const type = types[index];
+  const choices = pools[type] || [];
+  for (const choice of choices) {
+    yield* cartesianEquipment({ ...base, [type]: choice }, types, pools, index + 1);
+  }
 }
 
 function weaponStates(template, pools, selectedTypes) {
@@ -433,35 +435,37 @@ export function orderedPlanKey(plan) {
   return `${unorderedPlanKey(plan)}::${(plan?.abilityOrder?.abilities || []).slice(1).map((entry) => entry.hrid).join(",")}`;
 }
 
-export function buildUniqueComponentPlans(baseline, pool, direction, monsterHrid, options = {}) {
+export function* iterateUniqueComponentPlans(baseline, pool, direction, monsterHrid, options = {}) {
   const selectedTypes = new Set(options.selectedEquipmentTypes || []);
   const fixed = fixedPresence(pool, direction, monsterHrid, options.fixedAbilityRules);
-  const all = [];
+  const unique = new Set();
   const fixedEquipment = Object.fromEntries(Object.entries(baseline.equipment || {}).filter(([type]) => (
     !selectedTypes.has(type) && !HAND_TYPES.has(type)
   )));
   const otherSelected = [...selectedTypes].filter((type) => !HAND_TYPES.has(type)).sort();
-  const equipmentCandidates = weaponStates(baseline, pool.equipmentPools, selectedTypes)
-    .flatMap((weapons) => cartesianEquipment({ ...fixedEquipment, ...weapons }, otherSelected, pool.equipmentPools));
   const abilities = abilitySets(baseline, pool, fixed, options);
-  for (const equipment of equipmentCandidates) {
-    for (const selected of abilities) {
-      all.push({
-        direction,
-        sourcePreset: baseline.sourcePreset || "",
-        sourcePresetId: baseline.sourcePresetId || "",
-        zeroCooldownHrid: selected.zeroCooldownHrid,
-        equipmentCandidate: { equipment },
-        abilityOrder: { abilities: [selected.aura, ...selected.actives] },
-      });
+  for (const weapons of weaponStates(baseline, pool.equipmentPools, selectedTypes)) {
+    for (const equipment of cartesianEquipment({ ...fixedEquipment, ...weapons }, otherSelected, pool.equipmentPools)) {
+      for (const selected of abilities) {
+        const plan = {
+          direction,
+          sourcePreset: baseline.sourcePreset || "",
+          sourcePresetId: baseline.sourcePresetId || "",
+          zeroCooldownHrid: selected.zeroCooldownHrid,
+          equipmentCandidate: { equipment },
+          abilityOrder: { abilities: [selected.aura, ...selected.actives] },
+        };
+        const key = unorderedPlanKey(plan);
+        if (unique.has(key)) continue;
+        unique.add(key);
+        yield { ...plan, key };
+      }
     }
   }
-  const unique = new Map();
-  for (const plan of all) {
-    const key = unorderedPlanKey(plan);
-    if (!unique.has(key)) unique.set(key, { ...plan, key });
-  }
-  return [...unique.values()];
+}
+
+export function buildUniqueComponentPlans(baseline, pool, direction, monsterHrid, options = {}) {
+  return [...iterateUniqueComponentPlans(baseline, pool, direction, monsterHrid, options)];
 }
 
 export function activeOrderPermutations(plan) {

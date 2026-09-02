@@ -77,31 +77,132 @@ function summarizeResult(run, requestedTrials) {
 }
 
 export function createSimulationAuditRecorder(options = {}) {
-  const records = [];
+  const activeRecords = [];
+  const recordChunks = [];
   const repeats = new Map();
+  const loadouts = new Map();
+  const loadoutsById = [];
+  const recordChunkSize = Math.max(2, Math.floor(number(options.recordChunkSize, 250)));
   const startedAt = options.startedAt || new Date().toISOString();
   let nextSequence = 1;
+  let recordCount = 0;
+
+  function createSummaryState() {
+    return {
+      actualSimulationBatches: 0,
+      completedBatches: 0,
+      failedBatches: 0,
+      combinationSignatures: new Set(),
+      loadoutSignatures: new Set(),
+      requestedTrials: 0,
+      completedTrials: 0,
+      repeatedBatches: 0,
+      expectedRetestBatches: 0,
+      suspiciousRepeatBatches: 0,
+      byStage: {},
+      stageSummary: new Map(),
+    };
+  }
+
+  const overallSummary = createSummaryState();
+  const monsterSummaries = new Map();
+
+  function updateSummary(state, record) {
+    const completedTrials = record.status === "completed" ? Math.max(0, number(record.result?.trials, 0)) : 0;
+    state.actualSimulationBatches += 1;
+    state.completedBatches += record.status === "completed" ? 1 : 0;
+    state.failedBatches += record.status === "failed" ? 1 : 0;
+    state.combinationSignatures.add(record.combinationKey);
+    state.loadoutSignatures.add(record.loadoutId);
+    state.requestedTrials += Math.max(0, number(record.trialsRequested, 0));
+    state.completedTrials += completedTrials;
+    state.repeatedBatches += record.isRepeatedCombination ? 1 : 0;
+    state.expectedRetestBatches += record.repeatClassification === "expected_retest" ? 1 : 0;
+    state.suspiciousRepeatBatches += record.repeatClassification === "suspicious_repeat" ? 1 : 0;
+    state.byStage[record.stage] = (state.byStage[record.stage] || 0) + 1;
+    if (!state.stageSummary.has(record.stage)) {
+      state.stageSummary.set(record.stage, { batches: 0, completedTrials: 0, loadoutSignatures: new Set() });
+    }
+    const stage = state.stageSummary.get(record.stage);
+    stage.batches += 1;
+    stage.completedTrials += completedTrials;
+    stage.loadoutSignatures.add(record.loadoutId);
+  }
+
+  function snapshot(state) {
+    return {
+      startedAt,
+      actualSimulationBatches: state.actualSimulationBatches,
+      completedBatches: state.completedBatches,
+      failedBatches: state.failedBatches,
+      uniqueCombinations: state.combinationSignatures.size,
+      uniqueLoadouts: state.loadoutSignatures.size,
+      requestedTrials: state.requestedTrials,
+      completedTrials: state.completedTrials,
+      repeatedBatches: state.repeatedBatches,
+      expectedRetestBatches: state.expectedRetestBatches,
+      suspiciousRepeatBatches: state.suspiciousRepeatBatches,
+      byStage: { ...state.byStage },
+      stageSummary: Object.fromEntries([...state.stageSummary].map(([stage, entry]) => [stage, {
+        batches: entry.batches,
+        completedTrials: entry.completedTrials,
+        uniqueLoadouts: entry.loadoutSignatures.size,
+      }])),
+    };
+  }
+
+  function flushRecordChunk() {
+    if (!activeRecords.length) return;
+    const json = JSON.stringify(activeRecords);
+    recordChunks.push(new Blob([json.slice(1, -1)], { type: "application/json" }));
+    activeRecords.length = 0;
+  }
+
+  function externalRecord(record) {
+    const definition = loadoutsById[record.loadoutId - 1];
+    return {
+      ...record,
+      combinationSignature: `${definition?.signature || ""}::Lv.${record.roomLevel}`,
+      loadoutSignature: definition?.signature || "",
+      loadout: definition?.loadout || null,
+    };
+  }
 
   const push = (record) => {
-    records.push(record);
-    options.onRecord?.(record);
+    const stored = { ...record, sequence: nextSequence++ };
+    activeRecords.push(stored);
+    recordCount += 1;
+    updateSummary(overallSummary, stored);
+    if (!monsterSummaries.has(stored.monsterHrid)) monsterSummaries.set(stored.monsterHrid, createSummaryState());
+    updateSummary(monsterSummaries.get(stored.monsterHrid), stored);
+    options.onRecord?.(stored);
+    if (activeRecords.length >= recordChunkSize) flushRecordChunk();
   };
 
   return {
     async simulate(engine, input, context = {}) {
-      const sequence = nextSequence++;
-      const combinationSignature = simulationCombinationSignature(input);
       const loadoutSignature = simulationLoadoutSignature(input);
-      const repeatIndex = (repeats.get(combinationSignature) || 0) + 1;
-      repeats.set(combinationSignature, repeatIndex);
+      if (!loadouts.has(loadoutSignature)) {
+        const definition = {
+          id: loadoutsById.length + 1,
+          signature: loadoutSignature,
+          loadout: summarizeSimulationLoadout(input, options.resolveName),
+        };
+        loadouts.set(loadoutSignature, definition);
+        loadoutsById.push(definition);
+      }
+      const loadoutId = loadouts.get(loadoutSignature).id;
+      const roomLevel = Math.max(0, Math.floor(number(input?.roomLevel, 0)));
+      const combinationKey = `${loadoutId}:${roomLevel}`;
+      const repeatIndex = (repeats.get(combinationKey) || 0) + 1;
+      repeats.set(combinationKey, repeatIndex);
       const beganAt = Date.now();
       const base = {
-        schemaVersion: 2,
-        sequence,
+        schemaVersion: 3,
         timestamp: new Date().toISOString(),
         monsterHrid: input?.monsterHrid || context.monsterHrid || "",
         monsterName: options.resolveName ? options.resolveName(input?.monsterHrid || context.monsterHrid || "") : null,
-        roomLevel: Math.max(0, Math.floor(number(input?.roomLevel, 0))),
+        roomLevel,
         trialsRequested: Math.max(0, Math.floor(number(input?.trials, 0))),
         seed: number(input?.seed, 0),
         stage: context.stage || "unknown",
@@ -112,13 +213,12 @@ export function createSimulationAuditRecorder(options = {}) {
         searchRound: context.searchRound == null ? null : Math.max(0, Math.floor(number(context.searchRound, 0))),
         direction: context.direction || null,
         changedDimensions: [...(context.changedDimensions || [])],
-        combinationSignature,
-        loadoutSignature,
+        combinationKey,
+        loadoutId,
         repeatIndex,
         isRepeatedCombination: repeatIndex > 1,
         expectedRetest: Boolean(context.expectedRetest),
         repeatClassification: repeatIndex === 1 ? "first_test" : context.expectedRetest ? "expected_retest" : "suspicious_repeat",
-        loadout: summarizeSimulationLoadout(input, options.resolveName),
       };
       try {
         const run = await engine.simulateRoom(input);
@@ -141,49 +241,53 @@ export function createSimulationAuditRecorder(options = {}) {
       }
     },
     get records() {
-      return [...records].sort((left, right) => left.sequence - right.sequence);
+      if (recordChunks.length) throw new Error("审计记录已压入低内存分块，请使用 exportBlob() 导出完整日志");
+      return [...activeRecords].sort((left, right) => left.sequence - right.sequence).map(externalRecord);
+    },
+    get recordCount() {
+      return recordCount;
     },
     summary(filter = {}) {
-      const selected = records.filter((record) => !filter.monsterHrid || record.monsterHrid === filter.monsterHrid);
-      const byStage = {};
-      const stageSummary = {};
-      for (const record of selected) {
-        byStage[record.stage] = (byStage[record.stage] || 0) + 1;
-        stageSummary[record.stage] ||= { batches: 0, completedTrials: 0, loadoutSignatures: new Set() };
-        stageSummary[record.stage].batches += 1;
-        stageSummary[record.stage].completedTrials += record.status === "completed" ? Math.max(0, Math.floor(number(record.result?.trials, 0))) : 0;
-        stageSummary[record.stage].loadoutSignatures.add(record.loadoutSignature);
-      }
-      return {
-        startedAt,
-        actualSimulationBatches: selected.length,
-        completedBatches: selected.filter((record) => record.status === "completed").length,
-        failedBatches: selected.filter((record) => record.status === "failed").length,
-        uniqueCombinations: new Set(selected.map((record) => record.combinationSignature)).size,
-        uniqueLoadouts: new Set(selected.map((record) => record.loadoutSignature)).size,
-        requestedTrials: selected.reduce((sum, record) => sum + Math.max(0, number(record.trialsRequested, 0)), 0),
-        completedTrials: selected.reduce((sum, record) => sum + (record.status === "completed" ? Math.max(0, number(record.result?.trials, 0)) : 0), 0),
-        repeatedBatches: selected.filter((record) => record.isRepeatedCombination).length,
-        expectedRetestBatches: selected.filter((record) => record.repeatClassification === "expected_retest").length,
-        suspiciousRepeatBatches: selected.filter((record) => record.repeatClassification === "suspicious_repeat").length,
-        byStage,
-        stageSummary: Object.fromEntries(Object.entries(stageSummary).map(([stage, entry]) => [stage, {
-          batches: entry.batches,
-          completedTrials: entry.completedTrials,
-          uniqueLoadouts: entry.loadoutSignatures.size,
-        }])),
-      };
+      if (!filter.monsterHrid) return snapshot(overallSummary);
+      return snapshot(monsterSummaries.get(filter.monsterHrid) || createSummaryState());
     },
     exportPayload(extra = {}) {
+      if (recordChunks.length) throw new Error("大型审计请使用 exportBlob() 导出");
       return {
-        reportType: "mwi_labyrinth_simulation_audit_v036",
-        schemaVersion: 2,
+        reportType: "mwi_labyrinth_simulation_audit_v037",
+        schemaVersion: 3,
         startedAt,
         exportedAt: new Date().toISOString(),
         ...extra,
         summary: this.summary(),
-        records: this.records,
+        loadouts: loadoutsById,
+        records: [...activeRecords],
       };
+    },
+    exportBlob(extra = {}) {
+      const header = {
+        reportType: "mwi_labyrinth_simulation_audit_v037",
+        schemaVersion: 3,
+        startedAt,
+        exportedAt: new Date().toISOString(),
+        ...extra,
+        summary: this.summary(),
+        loadouts: loadoutsById,
+      };
+      const replacer = (_key, value) => value instanceof Set ? [...value] : value;
+      const parts = [`${JSON.stringify(header, replacer).slice(0, -1)},"records":[`];
+      let hasRecords = false;
+      for (const chunk of recordChunks) {
+        if (hasRecords) parts.push(",");
+        parts.push(chunk);
+        hasRecords = true;
+      }
+      if (activeRecords.length) {
+        if (hasRecords) parts.push(",");
+        parts.push(JSON.stringify(activeRecords).slice(1, -1));
+      }
+      parts.push("]}");
+      return new Blob(parts, { type: "application/json" });
     },
   };
 }

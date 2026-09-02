@@ -45,7 +45,7 @@ const elements = Object.fromEntries([
   "monster-options", "equipment-options", "skill-options", "fixed-rules-status", "fixed-skill-rules", "min-monster-level", "max-monster-level", "test-trials", "review-trials", "optimize-trials", "equipment-preset-source", "resource-utilization",
   "target-rate", "parallel-count", "start-button", "pause-button", "cancel-button", "run-status", "audit-status", "run-time-status", "elapsed-time", "remaining-time", "progress-percent", "progress-track", "progress-bar", "results-section", "loadout-summary", "monster-tabs", "monster-detail", "export-button", "export-loadout-button", "export-audit-button",
 ].map((id) => [id, document.getElementById(id)]));
-const state = { character: null, catalog: null, results: [], activeMonster: 0, resultSelections: new Map(), engines: [], monsterProgress: new Map(), overallProgress: 0, abortController: null, pauseController: null, isPaused: false, lastRunStatus: "", startedAt: null, runStartedAtMilliseconds: 0, pausedAtMilliseconds: 0, pausedTotalMilliseconds: 0, timingInterval: null, bridgeRevision: 0, fixedRules: structuredClone(DEFAULT_FIXED_ABILITY_RULES), auditRecorder: null, cpuWorkerCount: 0, resourceUtilization: 80 };
+const state = { character: null, catalog: null, results: [], activeMonster: 0, resultSelections: new Map(), engines: [], monsterProgress: new Map(), overallProgress: 0, abortController: null, pauseController: null, isPaused: false, lastRunStatus: "", startedAt: null, runStartedAtMilliseconds: 0, pausedAtMilliseconds: 0, pausedTotalMilliseconds: 0, timingInterval: null, auditRenderTimer: null, pendingAuditRecord: null, progressRenderTimer: null, pendingProgress: null, bridgeRevision: 0, fixedRules: structuredClone(DEFAULT_FIXED_ABILITY_RULES), auditRecorder: null, cpuWorkerCount: 0, resourceUtilization: 80 };
 
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
 function percent(value, digits = 1) { return `${(Number(value || 0) * 100).toFixed(digits)}%`; }
@@ -105,9 +105,44 @@ function renderAuditStatus(lastRecord = null) {
   elements["export-audit-button"].disabled = false;
 }
 
-function downloadJson(payload, filename) {
-  const text = JSON.stringify(payload, (_key, value) => value instanceof Set ? [...value] : value, 2);
-  const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+function flushAuditStatus() {
+  if (state.auditRenderTimer) clearTimeout(state.auditRenderTimer);
+  state.auditRenderTimer = null;
+  const record = state.pendingAuditRecord;
+  state.pendingAuditRecord = null;
+  renderAuditStatus(record);
+}
+
+function scheduleAuditStatus(record) {
+  state.pendingAuditRecord = record;
+  if (state.auditRenderTimer) return;
+  state.auditRenderTimer = setTimeout(flushAuditStatus, 200);
+}
+
+function flushProgressStatus() {
+  if (state.progressRenderTimer) clearTimeout(state.progressRenderTimer);
+  state.progressRenderTimer = null;
+  const pending = state.pendingProgress;
+  state.pendingProgress = null;
+  if (!pending) return;
+  const aggregate = [...state.monsterProgress.values()].reduce((sum, value) => sum + value, 0);
+  setOverallProgress(Math.min(0.999, aggregate / pending.total));
+  const { name, progress } = pending;
+  const phase = progress.phase === "test" ? "测试阶段" : progress.phase === "review" ? "复核阶段" : progress.phase === "optimize" ? "优化阶段" : "处理中";
+  const direction = progress.direction ? `${progress.direction.strategyZh || `${progress.direction.styleZh || ""}${progress.direction.damageTypeZh ? `·${progress.direction.damageTypeZh}` : ""}`} · ` : "";
+  const detail = `${direction}方案 ${progress.currentPlan || progress.completedPlans || 0}/${progress.totalPlans || "—"}${progress.level ? ` · 二分探测 Lv.${progress.level}` : ""}${progress.probeCount ? ` · 本方案第 ${progress.probeCount} 次探测` : ""}`;
+  setRunningStatus(`${name} · ${phase} · ${detail}`);
+}
+
+function scheduleProgressStatus(monsterHrid, name, total, progress) {
+  state.monsterProgress.set(monsterHrid, progressWithinMonster(progress));
+  state.pendingProgress = { name, total, progress };
+  if (state.progressRenderTimer) return;
+  state.progressRenderTimer = setTimeout(flushProgressStatus, 100);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
@@ -115,6 +150,11 @@ function downloadJson(payload, filename) {
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function downloadJson(payload, filename) {
+  const text = JSON.stringify(payload, (_key, value) => value instanceof Set ? [...value] : value, 2);
+  downloadBlob(new Blob([text], { type: "application/json" }), filename);
 }
 
 function checkbox(id, label, checked = true, group = "") { return `<label class="choice"><input type="checkbox" data-group="${group}" data-value="${escapeHtml(id)}" ${checked ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`; }
@@ -319,13 +359,7 @@ function renderDetail() {
 async function runMonster(monsterHrid, index, options, engine, total) {
   const name = MONSTER_NAMES[monsterHrid];
   return optimizeMonster({ character: state.character, catalog: state.catalog, engine, monsterHrid, ...options, simulationDirection: options.simulationDirectionsByMonster?.[monsterHrid] || "auto", auditRecorder: state.auditRecorder, seedBase: 20260819 + index * 1000003, signal: state.abortController.signal, onProgress: (progress) => {
-    state.monsterProgress.set(monsterHrid, progressWithinMonster(progress));
-    const aggregate = [...state.monsterProgress.values()].reduce((sum, value) => sum + value, 0);
-    setOverallProgress(Math.min(0.999, aggregate / total));
-    const phase = progress.phase === "test" ? "测试阶段" : progress.phase === "review" ? "复核阶段" : progress.phase === "optimize" ? "优化阶段" : "处理中";
-    const direction = progress.direction ? `${progress.direction.strategyZh || `${progress.direction.styleZh || ""}${progress.direction.damageTypeZh ? `·${progress.direction.damageTypeZh}` : ""}`} · ` : "";
-    const detail = `${direction}方案 ${progress.currentPlan || progress.completedPlans || 0}/${progress.totalPlans || "—"}${progress.level ? ` · 二分探测 Lv.${progress.level}` : ""}${progress.probeCount ? ` · 本方案第 ${progress.probeCount} 次探测` : ""}`;
-    setRunningStatus(`${name} · ${phase} · ${detail}`);
+    scheduleProgressStatus(monsterHrid, name, total, progress);
   } });
 }
 async function runAll() {
@@ -348,7 +382,7 @@ async function runAll() {
   state.cpuWorkerCount = cpuWorkerCount;
   const pauseController = createPauseController();
   const options = { minMonsterLevel, maxMonsterLevel, minimumEquipmentLevel: 80, optimizableEquipmentTypes: selectedEquipmentTypes, equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: structuredClone(state.fixedRules), targetRate: Math.max(0.01, Math.min(0.99, (Number(elements["target-rate"].value) || 70) / 100)), testTrials, reviewTrials, optimizeTrials, pauseController, resourceUtilization };
-  clearInterval(state.timingInterval); state.results = []; state.resultSelections = new Map(); state.monsterProgress = new Map(monsterHrids.map((hrid) => [hrid, 0])); state.overallProgress = 0; state.startedAt = new Date().toISOString(); state.runStartedAtMilliseconds = Date.now(); state.pausedAtMilliseconds = 0; state.pausedTotalMilliseconds = 0; state.auditRecorder = createSimulationAuditRecorder({ startedAt: state.startedAt, resolveName: (hrid) => chineseName(hrid, state.catalog?.itemDetailMap?.[hrid]?.name || state.catalog?.abilityDetailMap?.[hrid]?.name || state.catalog?.combatMonsterDetailMap?.[hrid]?.name || hrid), onRecord: (record) => renderAuditStatus(record) }); state.abortController = new AbortController(); state.pauseController = pauseController; state.isPaused = false; state.lastRunStatus = ""; state.engines = []; elements["start-button"].disabled = true; elements["pause-button"].hidden = false; elements["pause-button"].textContent = "暂停"; elements["cancel-button"].hidden = false; elements["run-time-status"].hidden = false; elements["progress-track"].hidden = false; elements["progress-bar"].style.width = "0%"; elements["progress-track"].setAttribute("aria-valuenow", "0"); elements["results-section"].hidden = false; state.timingInterval = setInterval(updateRunTiming, 1000); updateRunTiming(); renderAuditStatus(); renderTabs(); renderDetail();
+  clearInterval(state.timingInterval); clearTimeout(state.auditRenderTimer); clearTimeout(state.progressRenderTimer); state.auditRenderTimer = null; state.pendingAuditRecord = null; state.progressRenderTimer = null; state.pendingProgress = null; state.results = []; state.resultSelections = new Map(); state.monsterProgress = new Map(monsterHrids.map((hrid) => [hrid, 0])); state.overallProgress = 0; state.startedAt = new Date().toISOString(); state.runStartedAtMilliseconds = Date.now(); state.pausedAtMilliseconds = 0; state.pausedTotalMilliseconds = 0; state.auditRecorder = createSimulationAuditRecorder({ startedAt: state.startedAt, resolveName: (hrid) => chineseName(hrid, state.catalog?.itemDetailMap?.[hrid]?.name || state.catalog?.abilityDetailMap?.[hrid]?.name || state.catalog?.combatMonsterDetailMap?.[hrid]?.name || hrid), onRecord: scheduleAuditStatus }); state.abortController = new AbortController(); state.pauseController = pauseController; state.isPaused = false; state.lastRunStatus = ""; state.engines = []; elements["start-button"].disabled = true; elements["pause-button"].hidden = false; elements["pause-button"].textContent = "暂停"; elements["cancel-button"].hidden = false; elements["run-time-status"].hidden = false; elements["progress-track"].hidden = false; elements["progress-bar"].style.width = "0%"; elements["progress-track"].setAttribute("aria-valuenow", "0"); elements["results-section"].hidden = false; state.timingInterval = setInterval(updateRunTiming, 1000); updateRunTiming(); renderAuditStatus(); renderTabs(); renderDetail();
   let completedNormally = false;
   try {
     const concurrency = Math.max(1, Math.min(Number(elements["parallel-count"].value) || 1, monsterHrids.length)); let cursor = 0;
@@ -357,9 +391,9 @@ async function runAll() {
     setRunningStatus(`正在初始化 ${cpuWorkerCount} 个 CPU Worker（${resourceUtilization === 100 ? "安全满载" : `${resourceUtilization}%`}）…`);
     await engine.initialize(state.catalog);
     const worker = async () => { while (cursor < monsterHrids.length) { checkAbort(); const position = cursor++; const hrid = monsterHrids[position]; const result = await runMonster(hrid, position, options, engine, monsterHrids.length); state.results[LABYRINTH_MONSTER_HRIDS.indexOf(hrid)] = result; state.monsterProgress.set(hrid, 1); setOverallProgress([...state.monsterProgress.values()].reduce((sum, value) => sum + value, 0) / monsterHrids.length); state.activeMonster = LABYRINTH_MONSTER_HRIDS.indexOf(hrid); renderTabs(); renderDetail(); } };
-    await Promise.all(Array.from({ length: concurrency }, worker)); completedNormally = true; setOverallProgress(1); setRunningStatus(`已完成 ${monsterHrids.length} 个怪物的并行模拟`);
+    await Promise.all(Array.from({ length: concurrency }, worker)); completedNormally = true; flushProgressStatus(); setOverallProgress(1); setRunningStatus(`已完成 ${monsterHrids.length} 个怪物的并行模拟`);
   } catch (error) { const stopped = state.abortController?.signal.aborted || error.name === "AbortError"; setRunningStatus(stopped ? "模拟已停止，已完成的结果仍可查看" : `模拟失败：${error.message}`); }
-  finally { finishPausedInterval(); state.isPaused = false; clearInterval(state.timingInterval); state.timingInterval = null; updateRunTiming(); if (!completedNormally) elements["remaining-time"].textContent = "—"; state.pauseController?.resume(); state.engines.forEach((engine) => engine.terminate()); state.engines = []; state.abortController = null; state.pauseController = null; elements["start-button"].disabled = false; elements["pause-button"].hidden = true; elements["pause-button"].textContent = "暂停"; elements["cancel-button"].hidden = true; }
+  finally { finishPausedInterval(); state.isPaused = false; clearInterval(state.timingInterval); state.timingInterval = null; clearTimeout(state.progressRenderTimer); state.progressRenderTimer = null; state.pendingProgress = null; flushAuditStatus(); updateRunTiming(); if (!completedNormally) elements["remaining-time"].textContent = "—"; state.pauseController?.resume(); state.engines.forEach((engine) => engine.terminate()); state.engines = []; state.abortController = null; state.pauseController = null; elements["start-button"].disabled = false; elements["pause-button"].hidden = true; elements["pause-button"].textContent = "暂停"; elements["cancel-button"].hidden = true; }
 }
 elements["start-button"].addEventListener("click", runAll);
 elements["pause-button"].addEventListener("click", () => {
@@ -381,17 +415,17 @@ elements["pause-button"].addEventListener("click", () => {
 elements["cancel-button"].addEventListener("click", () => { state.abortController?.abort(); state.engines.forEach((engine) => engine.terminate()); });
 elements["export-button"].addEventListener("click", () => {
   const skillValues = selectedValues("skill-options");
-  const payload = { reportType: "mwi_labyrinth_exhaustive_search_v036", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: true, uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: true, reviewTolerance: 0.01, finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
-  downloadJson(payload, `mwi迷宫模拟报告-v036-${new Date().toISOString().slice(0, 10)}.json`);
+  const payload = { reportType: "mwi_labyrinth_exhaustive_search_v037", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: true, uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: true, reviewTolerance: 0.01, safeDynamicRetention: true, finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
+  downloadJson(payload, `mwi迷宫模拟报告-v037-${new Date().toISOString().slice(0, 10)}.json`);
 });
 elements["export-audit-button"].addEventListener("click", () => {
-  if (!state.auditRecorder?.records.length) { elements["run-status"].textContent = "尚无模拟明细可下载"; return; }
-  const payload = state.auditRecorder.exportPayload({
+  if (!state.auditRecorder?.recordCount) { elements["run-status"].textContent = "尚无模拟明细可下载"; return; }
+  const payload = state.auditRecorder.exportBlob({
     gameVersion: state.catalog?.gameVersion,
     selectedMonsters: selectedValues("monster-options"),
     simulationDirectionsByMonster: selectedMonsterDirections(),
     phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) },
   });
-  downloadJson(payload, `mwi模拟审计日志-v036-${new Date().toISOString().slice(0, 10)}.json`);
+  downloadBlob(payload, `mwi模拟审计日志-v037-${new Date().toISOString().slice(0, 10)}.json`);
 });
   elements["export-loadout-button"].addEventListener("click", async () => { try { const ok = await downloadLoadouts(state.results, state.catalog, SLOT_NAMES, MONSTER_NAMES); elements["run-status"].textContent = ok ? "已导出全部怪物配装总表" : "尚无已完成的方案可导出"; } catch (error) { elements["run-status"].textContent = `配装总表导出失败：${error.message}`; } });

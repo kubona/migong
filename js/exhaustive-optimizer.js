@@ -4,7 +4,7 @@ import {
   activeOrderPermutations,
   buildCurrentBaseline,
   buildTargetedComponentPool,
-  buildUniqueComponentPlans,
+  iterateUniqueComponentPlans,
 } from "./component-planner.js";
 import {
   SIMULATION_DIRECTION_AUTO,
@@ -14,6 +14,7 @@ import {
 import { buildSimulationInput } from "./player-dto.js";
 import { wilsonInterval } from "./statistics.js";
 import { maximumBinaryProbeCount } from "./progress-metrics.js";
+import { createBoundedResultRetention, createTopResultRetention } from "./result-retention.js";
 
 const MAIN_HAND = "/equipment_types/main_hand";
 const OFF_HAND = "/equipment_types/off_hand";
@@ -46,6 +47,20 @@ async function mapWithConcurrency(items, concurrency, mapper) {
   };
   await Promise.all(Array.from({ length: Math.min(source.length, Math.max(1, concurrency)) }, run));
   return results;
+}
+
+async function forEachWithConcurrency(items, concurrency, mapper) {
+  const source = Array.isArray(items) ? items : [];
+  if (!source.length) return;
+  let cursor = 0;
+  const run = async () => {
+    while (cursor < source.length) {
+      const index = cursor;
+      cursor += 1;
+      await mapper(source[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(source.length, Math.max(1, concurrency)) }, run));
 }
 
 function directionProfile(profile, direction) {
@@ -142,8 +157,14 @@ async function simulatePlan(options) {
   checkAbort(options.signal);
   await options.pauseController?.waitIfPaused(options.signal);
   checkAbort(options.signal);
+  const simulationInput = options.simulationInput || options.plan?.simulationInput || buildSimulationInput(
+    options.character,
+    options.catalog,
+    options.plan.equipmentCandidate,
+    options.plan.abilityOrder,
+  );
   const input = {
-    ...options.plan.simulationInput,
+    ...simulationInput,
     monsterHrid: options.monsterHrid,
     roomLevel: options.roomLevel,
     roomDurationSeconds: 120,
@@ -168,11 +189,18 @@ export async function searchHighestLevelForPlan(options) {
   const minimum = Math.max(1, Math.floor(finiteNumber(options.minLevel, 20)));
   const maximum = Math.max(minimum, Math.floor(finiteNumber(options.maxLevel, minimum)));
   const targetRate = Math.max(0.01, Math.min(0.99, finiteNumber(options.targetRate, 0.7)));
+  const simulationInput = options.plan?.simulationInput || buildSimulationInput(
+    options.character,
+    options.catalog,
+    options.plan.equipmentCandidate,
+    options.plan.abilityOrder,
+  );
   const cache = new Map();
   const probe = async (level) => {
     if (!cache.has(level)) {
       const result = await simulatePlan({
         ...options,
+        simulationInput,
         roomLevel: level,
         seed: finiteNumber(options.seedBase, 20260826) + level,
         reason: `${options.stage === "review" ? "复核" : "测试"}阶段二分探测 Lv.${level}`,
@@ -204,7 +232,7 @@ export async function searchHighestLevelForPlan(options) {
     bestLevel = minimum;
   }
   return {
-    plan: options.plan,
+    plan: compactPlan(options.plan),
     highestLevel: bestLevel,
     targetMet: passes(bestResult),
     result: bestResult,
@@ -215,11 +243,10 @@ export async function searchHighestLevelForPlan(options) {
   };
 }
 
-function enrichPlan(character, catalog, plan) {
-  return {
-    ...plan,
-    simulationInput: buildSimulationInput(character, catalog, plan.equipmentCandidate, plan.abilityOrder),
-  };
+function compactPlan(plan) {
+  if (!plan || !Object.prototype.hasOwnProperty.call(plan, "simulationInput")) return plan;
+  const { simulationInput: _discarded, ...compact } = plan;
+  return compact;
 }
 
 function withRank(entries) {
@@ -245,7 +272,7 @@ async function runDirectionWorkflow(options) {
   const uniquePlans = new Map();
   for (const equipmentBaseline of equipmentBaselines) {
     const baseline = { ...abilityBaseline, ...equipmentBaseline };
-    for (const plan of buildUniqueComponentPlans(baseline, pool, options.direction, options.monsterHrid, {
+    for (const plan of iterateUniqueComponentPlans(baseline, pool, options.direction, options.monsterHrid, {
       selectedEquipmentTypes: selectedTypes,
       optimizeAura: options.optimizeAura,
       optimizeActives: options.optimizeActives,
@@ -254,19 +281,21 @@ async function runDirectionWorkflow(options) {
       if (!uniquePlans.has(plan.key)) uniquePlans.set(plan.key, plan);
     }
   }
-  const plans = [...uniquePlans.values()].map((plan) => enrichPlan(options.character, options.catalog, plan));
+  const plans = [...uniquePlans.values()];
   if (!plans.length) throw new Error(`${options.direction.strategyZh || `${options.direction.styleZh}·${options.direction.damageTypeZh}`}方向没有符合候选池、预设固定栏位和固定技能规则的组合`);
+  const savedPlanCount = plans.length;
 
   let testCompletedPlans = 0;
   const binaryProbeBudget = maximumBinaryProbeCount(options.minLevel, options.maxLevel);
   const testEstimatedBatches = plans.length * binaryProbeBudget;
   let testCompletedBatches = 0;
   const testPlanConcurrency = recommendedPlanConcurrency(options.engine?.workerCount, options.testTrials, plans.length);
+  const testRetention = createBoundedResultRetention({ compare: compareAtHighest, toleranceRatio: 0.01 });
   options.onProgress?.({
     phase: "test", direction: options.direction, completedPlans: 0, totalPlans: plans.length,
     currentPlan: 1, phaseCompletedBatches: 0, phaseTotalBatches: testEstimatedBatches,
   });
-  const testResults = await mapWithConcurrency(plans, testPlanConcurrency, async (plan, index) => {
+  await forEachWithConcurrency(plans, testPlanConcurrency, async (plan, index) => {
     const result = await searchHighestLevelForPlan({
       ...options,
       plan,
@@ -291,24 +320,28 @@ async function runDirectionWorkflow(options) {
       },
     });
     testCompletedPlans += 1;
+    testRetention.consider(result, index);
     options.onProgress?.({ phase: "test", direction: options.direction, completedPlans: testCompletedPlans, totalPlans: plans.length, currentPlan: index + 1, phaseCompletedBatches: testCompletedBatches, phaseTotalBatches: testEstimatedBatches });
-    return result;
   });
   options.onProgress?.({ phase: "test", direction: options.direction, completedPlans: plans.length, totalPlans: plans.length, currentPlan: plans.length, phaseCompletedBatches: testCompletedBatches, phaseTotalBatches: testCompletedBatches, phaseComplete: true });
 
-  const bestTestLevel = Math.max(...testResults.filter((entry) => entry.targetMet).map((entry) => entry.highestLevel), 0);
-  const reviewFloor = bestTestLevel > 0 ? Math.ceil(bestTestLevel * 0.99) : options.minLevel;
-  const reviewCandidates = testResults.filter((entry) => entry.targetMet && entry.highestLevel >= reviewFloor);
-  if (!reviewCandidates.length) reviewCandidates.push(...testResults.sort(compareAtHighest).slice(0, 1));
+  const retainedTest = testRetention.finish();
+  const bestTestLevel = retainedTest.bestLevel;
+  const reviewFloor = bestTestLevel > 0 ? retainedTest.reviewFloor : options.minLevel;
+  const reviewCandidates = retainedTest.candidates;
+  const reviewCandidateCount = reviewCandidates.length;
+  plans.length = 0;
+  uniquePlans.clear();
   const reviewEstimatedBatches = reviewCandidates.length * binaryProbeBudget;
   let reviewCompletedBatches = 0;
   let reviewCompletedPlans = 0;
   const reviewPlanConcurrency = recommendedPlanConcurrency(options.engine?.workerCount, options.reviewTrials, reviewCandidates.length);
+  const reviewRetention = createTopResultRetention({ compare: compareAtHighest, limit: 5 });
   options.onProgress?.({
     phase: "review", direction: options.direction, completedPlans: 0, totalPlans: reviewCandidates.length,
     currentPlan: 1, phaseCompletedBatches: 0, phaseTotalBatches: reviewEstimatedBatches,
   });
-  const reviewResults = await mapWithConcurrency(reviewCandidates, reviewPlanConcurrency, async (candidate, index) => {
+  await forEachWithConcurrency(reviewCandidates, reviewPlanConcurrency, async (candidate, index) => {
     const result = await searchHighestLevelForPlan({
       ...options,
       plan: candidate.plan,
@@ -333,18 +366,18 @@ async function runDirectionWorkflow(options) {
       },
     });
     reviewCompletedPlans += 1;
+    reviewRetention.consider(result, index);
     options.onProgress?.({ phase: "review", direction: options.direction, completedPlans: reviewCompletedPlans, totalPlans: reviewCandidates.length, currentPlan: index + 1, phaseCompletedBatches: reviewCompletedBatches, phaseTotalBatches: reviewEstimatedBatches });
-    return result;
   });
   options.onProgress?.({ phase: "review", direction: options.direction, completedPlans: reviewCandidates.length, totalPlans: reviewCandidates.length, currentPlan: reviewCandidates.length, phaseCompletedBatches: reviewCompletedBatches, phaseTotalBatches: reviewCompletedBatches, phaseComplete: true });
-  reviewResults.sort(compareAtHighest);
-  const finalists = reviewResults.slice(0, 5);
+  const finalists = reviewRetention.finish();
+  reviewCandidates.length = 0;
   const optimizationLevel = Math.max(...finalists.filter((entry) => entry.targetMet).map((entry) => entry.highestLevel), finalists[0]?.highestLevel || options.minLevel);
 
   const orderedMap = new Map();
   for (const finalist of finalists) {
     for (const ordered of activeOrderPermutations(finalist.plan)) {
-      if (!orderedMap.has(ordered.key)) orderedMap.set(ordered.key, enrichPlan(options.character, options.catalog, ordered));
+      if (!orderedMap.has(ordered.key)) orderedMap.set(ordered.key, ordered);
     }
   }
   const orderedPlans = [...orderedMap.values()];
@@ -375,16 +408,17 @@ async function runDirectionWorkflow(options) {
     profile: options.profile,
     poolDiagnostics: pool.diagnostics,
     equipmentPresetSource: options.equipmentPresetSource || "system",
-    savedPlanCount: plans.length,
-    testResults,
+    savedPlanCount,
+    testResultCount: retainedTest.totalResults,
+    testProbeCount: retainedTest.totalProbes,
     bestTestLevel,
     reviewFloor,
-    reviewCandidateCount: reviewCandidates.length,
-    reviewResults,
-    finalists,
+    reviewCandidateCount,
+    reviewProbeCount: reviewCompletedBatches,
+    finalistCount: finalists.length,
+    searchCapped: finalists.some((entry) => entry.capped),
     optimizationLevel,
     orderedPlanCount: orderedPlans.length,
-    optimized,
     rankings: { winRate: winRateRanking, speed: speedRanking },
   };
 }
@@ -457,8 +491,8 @@ export async function optimizeMonsterExhaustive(options) {
   const winner = directionResults[0];
   const best = winner?.rankings?.winRate?.[0];
   if (!winner || !best) throw new Error(`${fullProfile.name} 没有生成可运行的最终方案`);
-  const testProbes = directionResults.reduce((sum, entry) => sum + entry.testResults.reduce((inner, result) => inner + result.probeCount, 0), 0);
-  const reviewProbes = directionResults.reduce((sum, entry) => sum + entry.reviewResults.reduce((inner, result) => inner + result.probeCount, 0), 0);
+  const testProbes = directionResults.reduce((sum, entry) => sum + entry.testProbeCount, 0);
+  const reviewProbes = directionResults.reduce((sum, entry) => sum + entry.reviewProbeCount, 0);
   const optimizationPlans = directionResults.reduce((sum, entry) => sum + entry.orderedPlanCount, 0);
   return {
     monsterHrid,
@@ -475,7 +509,7 @@ export async function optimizeMonsterExhaustive(options) {
     highestLevel: winner.optimizationLevel,
     estimatedHighestFloorRange: monsterLevelToFloorRange(winner.optimizationLevel),
     targetMet: best.result.clearRate >= (options.targetRate || 0.7),
-    searchCapped: winner.finalists.some((entry) => entry.capped),
+    searchCapped: winner.searchCapped,
     testedUpperBound: maxLevel,
     initialUpperBound: maxLevel,
     bestPlan: best.plan,
@@ -491,12 +525,12 @@ export async function optimizeMonsterExhaustive(options) {
       directionResults: directionResults.map((entry) => ({
         direction: entry.direction,
         savedPlans: entry.savedPlanCount,
-        testProbes: entry.testResults.reduce((sum, result) => sum + result.probeCount, 0),
+        testProbes: entry.testProbeCount,
         bestTestLevel: entry.bestTestLevel,
         reviewFloor: entry.reviewFloor,
         reviewCandidates: entry.reviewCandidateCount,
-        reviewProbes: entry.reviewResults.reduce((sum, result) => sum + result.probeCount, 0),
-        finalists: entry.finalists.length,
+        reviewProbes: entry.reviewProbeCount,
+        finalists: entry.finalistCount,
         optimizationLevel: entry.optimizationLevel,
         orderedPlans: entry.orderedPlanCount,
         ...entry.poolDiagnostics,
@@ -508,11 +542,11 @@ export async function optimizeMonsterExhaustive(options) {
     },
     candidateCounts: {
       savedPlans: directionResults.reduce((sum, entry) => sum + entry.savedPlanCount, 0),
-      testPlans: directionResults.reduce((sum, entry) => sum + entry.testResults.length, 0),
+      testPlans: directionResults.reduce((sum, entry) => sum + entry.testResultCount, 0),
       testProbes,
-      reviewPlans: directionResults.reduce((sum, entry) => sum + entry.reviewResults.length, 0),
+      reviewPlans: directionResults.reduce((sum, entry) => sum + entry.reviewCandidateCount, 0),
       reviewProbes,
-      finalistPlans: directionResults.reduce((sum, entry) => sum + entry.finalists.length, 0),
+      finalistPlans: directionResults.reduce((sum, entry) => sum + entry.finalistCount, 0),
       optimizationPlans,
       simulatedPlans: testProbes + reviewProbes + optimizationPlans,
     },
