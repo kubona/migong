@@ -92,7 +92,7 @@ function buildAbilities(character, catalog, abilityOrder, intelligenceLevel) {
   return result;
 }
 
-export function buildSimulationInput(character, catalog, equipmentCandidate, abilityOrder) {
+function buildBaseSimulationInput(character, catalog, equipmentCandidate, abilityOrder) {
   const levels = combatLevels(character);
   const houseRooms = {};
   for (const [key, room] of Object.entries(character.characterHouseRoomMap || {})) {
@@ -136,4 +136,17 @@ export function buildSimulationInput(character, catalog, equipmentCandidate, abi
     labyrinthCombatBuffs: buildLabyrinthCombatBuffs(character.characterInfo),
     mazeCrateItemHrids: [...new Set(crates)],
   };
+}
+
+// Character/catalog are immutable snapshots for a run. Weak keys release the
+// cache when a different data file is loaded; combat state never enters it.
+const characterBases = new WeakMap();
+export function buildSimulationInput(character, catalog, equipmentCandidate, abilityOrder) {
+  let catalogs = characterBases.get(character);
+  if(!catalogs) { catalogs=new WeakMap(); characterBases.set(character,catalogs); }
+  let base = catalogs.get(catalog);
+  if(!base) { base=buildBaseSimulationInput(character,catalog,null,null); catalogs.set(catalog,base); }
+  return {...base,playerDto:{...base.playerDto,
+    equipment:buildEquipment(equipmentCandidate),
+    abilities:buildAbilities(character,catalog,abilityOrder,base.playerDto.intelligenceLevel)}};
 }

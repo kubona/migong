@@ -44,29 +44,57 @@
       <summary class="section-heading"><span class="step">3</span><strong id="settings-title">模拟设置</strong><span class="collapse-label"></span></summary>
       <div class="panel-content">
         <div class="settings-grid">
+          <label>搜索方式<select id="search-mode"><option value="learning" selected>学习式搜索</option><option value="exhaustive">传统全量搜索（对照）</option></select></label>
+          <label id="learning-budget-label">每怪搜索批次预算<input id="learning-budget" type="number" min="10" max="1000000" value="2000"></label>
           <label>等级下限<input id="min-monster-level" type="number" min="1" max="5000" value="200"></label>
           <label>等级上限<input id="max-monster-level" type="number" min="1" max="5000" value="300"></label>
           <label>目标胜率<input id="target-rate" type="number" min="1" max="99" value="70"><span class="suffix">%</span></label>
           <label>预设配装<select id="equipment-preset-source"><option value="system" selected>系统预设配装</option><option value="personal">个人预设配装</option></select></label>
           <label>资源占用<select id="resource-utilization"><option value="50">50%</option><option value="80" selected>80%</option><option value="100">100%（安全满载）</option></select></label>
           <label>并行怪物数<select id="parallel-count"></select></label>
-          <label>测试次数<input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
-          <label>复核次数<input id="review-trials" type="number" min="10" max="10000" step="10" value="300"></label>
-          <label>优化次数<input id="optimize-trials" type="number" min="10" max="10000" step="10" value="500"></label>
+          <label><span id="test-trials-label">搜索每批场数</span><input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
+          <label><span id="review-trials-label">验证每批场数</span><input id="review-trials" type="number" min="10" max="10000" step="10" value="300"></label>
+          <label><span id="optimize-trials-label">每方案等级验证上限</span><input id="optimize-trials" type="number" min="10" max="100000" step="10" value="5000"></label>
         </div>
       </div>
     </details>
 
     <section class="run-panel" aria-label="开始模拟">
-      <button id="start-button" class="primary-button" disabled>开始全量模拟</button>
+      <button id="preview-button" class="secondary-button" disabled>预览候选</button>
+      <button id="resume-button" class="secondary-button" disabled>恢复上次任务</button>
+      <button id="start-button" class="primary-button" disabled>开始学习搜索</button>
       <button id="pause-button" class="secondary-button" hidden>暂停</button>
       <button id="cancel-button" class="secondary-button" hidden>停止</button>
       <div class="run-status" id="run-status">请先加载两份数据</div>
       <div class="run-note" id="audit-status" hidden></div>
+      <div class="run-note" id="checkpoint-status"></div>
+      <details class="subsection"><summary>计算状态</summary><div id="performance-status" class="subsection-content">尚未运行</div></details>
       <div class="run-time-status" id="run-time-status" hidden><span>流程进度 <strong id="progress-percent">0.0%</strong></span><span>运行时间 <strong id="elapsed-time">0秒</strong></span><span>预估剩余时间 <strong id="remaining-time">计算中</strong></span></div>
       <div class="progress-track" id="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div id="progress-bar"></div></div>
     </section>
 
+    <details id="candidate-panel" class="panel" hidden><summary>候选清单</summary><div id="candidate-preview" class="panel-content"></div></details>
+    <details id="learning-panel" class="panel"><summary>学习档案</summary><div class="panel-content">
+      <button id="export-learning" class="secondary-button">导出学习档案</button>
+      <label class="secondary-button">导入学习档案<input id="import-learning" type="file" accept=".jsonl" hidden></label>
+      <div id="learning-status" class="compact-note">本机自动保存</div>
+    </div></details>
+    <details class="panel"><summary>说明</summary><div class="panel-content">
+      <p>v0.40：怪物首次技能冷却按计算器1.5.13设为急速修正后冷却的固定50%；此为兼容规则，尚未经游戏官方验证。旧规则断点和学习证据不能直接复用。独立战斗次数及统计认证口径不变。</p>
+      <p>学习式搜索：在完整合法组件池中跨全域抽样，装备、光环和主动顺序一起搜索。每批用真实战斗更新小型树模型，至少四分之一的调度位置留给全局探索。魔法0CD仍固定第四位，其他原有组件限制保持不变。</p>
+      <p>学习式搜索是有预算的近似优化，不承诺找到全局最优。最多保留512个随机基础组合及1024条历史样本涉及的合法基础组合；小空间枚举全部主动顺序，大空间每个基础组合抽取三个顺序。新任务重新抽样，可继续利用已有学习记录。传统全量搜索保留用于对照，不具备新增的95%认证。</p>
+      <p>搜索每批默认100场、每怪预算2000批；验证每批300场、每套配装在每个验证等级最多5000场。搜索结束预先冻结最多四套配装，每套覆盖冲高、证据较支持和较稳妥的备选等级，使用全新的随机样本验证。预算用完证据不足即标记未确认，不代表必然不达标。</p>
+      <p>95%指本次任务全部选中怪物、全部冻结验证项的同时统计保障，采用KL界及检验次数分配；前提是模拟战斗的随机样本符合独立同分布假设。它不代表95%通关率，也不保证游戏模型本身正确。跨多次任务反复挑选结果不属于同一次95%保障。</p>
+      <p>学习结果中的胜率榜和耗时榜只比较本次验证达标且等级最高的方案；不足三套不补凑。没有达标项时只展示明确标注的未认证候选。进度条表示本次搜索预算与验证任务进度，不是发现全局最优的百分比。</p>
+      <p>学习记录和模型保存在本机。目标胜率、搜索预算、勾选部位变化不使相同战斗记录失效；角色基础属性、触发条件、游戏数据或战斗代码改变时保守隔离旧记录。新增装备仍可利用同环境记录，未测配装必须真实模拟。</p>
+      <p>学习档案不包含原始角色文件、账号标识或设备信息，但包含配装、技能及战斗结果，请仅自行保存或分享给信任的人。档案校验只能发现损坏，不能证明来源真实；导入资料仅用于搜索引导，最终认证始终使用本机新生成的独立样本。模型可由档案重建，不需要从零收集战斗数据。</p>
+      <p>任务记录保存在本浏览器、本网址的本机存储中。恢复时重新导入原数据，程序将恢复上次设置并核对计算版本。清除浏览器数据会移除断点。</p>
+      <p>仅已保存的完整探测批次能够恢复；关闭页面时尚未完成或尚未写入的批次会重新计算。空间不足时会停止并提示。</p>
+      <p>进度与剩余时间按战斗工作量估算。复核数量尚未确定时显示时间范围，范围会随运行收窄。</p>
+      <p>达到等级上限表示至少能到该等级。胜场耗时榜仅比较获胜战斗耗时，请同时查看胜率。</p>
+      <p>资源档位控制可用计算线程；100%档仍为系统保留线程。</p>
+      <button id="clear-saved-button" class="secondary-button" type="button">清除任务与学习档案</button>
+    </div></details>
     <section id="results-section" class="results" hidden aria-labelledby="results-title">
       <div class="results-heading"><h2 id="results-title">配装结果</h2><div class="results-actions"><button id="export-audit-button" class="secondary-button" disabled>下载模拟明细</button><button id="export-loadout-button" class="secondary-button">导出配装总表</button><button id="export-button" class="secondary-button">导出完整报告</button></div></div>
       <details id="summary-report" class="report-block" open><summary>全部怪物配装总表</summary><div id="loadout-summary" class="loadout-summary"></div></details>

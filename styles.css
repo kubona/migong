@@ -255,3 +255,11 @@ button { min-height: 43px; padding: 0 18px; border-radius: 9px; cursor: pointer;
   .collapse-label { display: none; }
   .ranking-controls { align-items: flex-start; flex-direction: column; }
 }
+
+.preview-scroll { max-width:100%; overflow-x:auto; }
+#candidate-preview { overflow-wrap:anywhere; }
+#candidate-preview table { width:100%; border-collapse:collapse; }
+#candidate-preview td { padding:8px; vertical-align:top; border-bottom:1px solid var(--border, #8885); }
+#candidate-preview details { margin:12px 0; }
+.run-panel > details { grid-column:1 / -1; min-width:0; }
+#performance-status { overflow-wrap:anywhere; }

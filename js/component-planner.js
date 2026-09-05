@@ -438,14 +438,24 @@ export function orderedPlanKey(plan) {
 export function* iterateUniqueComponentPlans(baseline, pool, direction, monsterHrid, options = {}) {
   const selectedTypes = new Set(options.selectedEquipmentTypes || []);
   const fixed = fixedPresence(pool, direction, monsterHrid, options.fixedAbilityRules);
-  const unique = new Set();
+  const unique = options.seenEquipment || new Set();
   const fixedEquipment = Object.fromEntries(Object.entries(baseline.equipment || {}).filter(([type]) => (
     !selectedTypes.has(type) && !HAND_TYPES.has(type)
   )));
   const otherSelected = [...selectedTypes].filter((type) => !HAND_TYPES.has(type)).sort();
   const abilities = abilitySets(baseline, pool, fixed, options);
+  const signature=JSON.stringify(abilities.map(s=>[s.aura.hrid,...s.actives.map(a=>a.hrid)]));
+  const groups=options.skillGroups || new Map();
+  if(!groups.has(signature))groups.set(signature,groups.size);
+  const groupId=groups.get(signature);
   for (const weapons of weaponStates(baseline, pool.equipmentPools, selectedTypes)) {
     for (const equipment of cartesianEquipment({ ...fixedEquipment, ...weapons }, otherSelected, pool.equipmentPools)) {
+      // All skill sets in one branch are already unique. Deduplicate equipment
+      // before multiplying by skills, including overlapping personal presets.
+      const groupKey = JSON.stringify([Object.entries(equipment).sort(([a],[b])=>a.localeCompare(b)).map(([slot,item])=>[slot,item.hrid,item.enhancementLevel||0]),
+        groupId]);
+      if (unique.has(groupKey)) continue;
+      unique.add(groupKey);
       for (const selected of abilities) {
         const plan = {
           direction,
@@ -456,8 +466,6 @@ export function* iterateUniqueComponentPlans(baseline, pool, direction, monsterH
           abilityOrder: { abilities: [selected.aura, ...selected.actives] },
         };
         const key = unorderedPlanKey(plan);
-        if (unique.has(key)) continue;
-        unique.add(key);
         yield { ...plan, key };
       }
     }

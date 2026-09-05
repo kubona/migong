@@ -96,7 +96,7 @@ function summaryRowSvg(result, catalog, slotNames, title, offsetY, index) {
     return `<text x="${x}" y="${y + 20}" fill="#8f938b" font-family="Microsoft YaHei, sans-serif" font-size="12">${safe(entry.slot)}</text>${iconSvg(entry, x + 70, y, 27)}<text x="${x + 108}" y="${y + 20}" fill="#f4efe4" font-family="Microsoft YaHei, sans-serif" font-size="13">${safe(entry.name)}</text><text x="1680" y="${y + 20}" text-anchor="end" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="12">${safe(entry.level)}</text>`;
   }).join("");
   const background = index % 2 === 0 ? "#151716" : "#101211";
-  return { height, markup: `<g transform="translate(0 ${offsetY})"><rect width="1720" height="${height}" fill="${background}"/><line x1="0" y1="${height - 1}" x2="1720" y2="${height - 1}" stroke="#343832"/><text x="24" y="48" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="23" font-weight="700">${safe(title)}</text><text x="24" y="77" fill="#aaa79d" font-family="Microsoft YaHei, sans-serif" font-size="13">最高怪物等级 ${safe(result.highestMonsterLevel ?? result.highestLevel)} · 胜率 ${safe(((result.finalResult?.clearRate || 0) * 100).toFixed(1))}%</text>${gear}${abilities}</g>` };
+  return { height, markup: `<g transform="translate(0 ${offsetY})"><rect width="1720" height="${height}" fill="${background}"/><line x1="0" y1="${height - 1}" x2="1720" y2="${height - 1}" stroke="#343832"/><text x="24" y="48" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="23" font-weight="700">${safe(title)}</text><text x="24" y="77" fill="#aaa79d" font-family="Microsoft YaHei, sans-serif" font-size="13">${result.learning ? (result.targetMet ? "已认证等级" : "未认证候选等级") : "最高怪物等级"} ${safe(result.highestMonsterLevel ?? result.highestLevel)} · 胜率 ${safe(((result.finalResult?.clearRate || 0) * 100).toFixed(1))}%</text>${gear}${abilities}</g>` };
 }
 
 export function buildLoadoutSvg(results, catalog, slotNames, monsterNames, spriteText) {
@@ -115,6 +115,6 @@ export async function downloadLoadouts(results, catalog, slotNames, monsterNames
   const spriteText = await fetch(new URL(OFFICIAL_ITEM_SPRITE_MODULE_PATH, import.meta.url)).then((response) => { if (!response.ok) throw new Error(`官方图标读取失败（${response.status}）`); return response.text(); });
   const svg = buildLoadoutSvg(results, catalog, slotNames, monsterNames, spriteText);
   const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
-  const anchor = document.createElement("a"); anchor.href = url; anchor.download = `mwi迷宫配装总表-v037-${new Date().toISOString().slice(0, 10)}.svg`; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+  const anchor = document.createElement("a"); anchor.href = url; anchor.download = `mwi迷宫配装总表-v039-${new Date().toISOString().slice(0, 10)}.svg`; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
   return true;
 }

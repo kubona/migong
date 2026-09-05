@@ -141,7 +141,31 @@ function engineWorkerMain() {
     Player = __webpack_require__("./src/combatsimulator/player.js").default;
     CombatSimulator = __webpack_require__("./src/combatsimulator/combatSimulator.js").default;
     Labyrinth = __webpack_require__("./src/combatsimulator/labyrinth.js").default;
+    installMonsterHalfCooldown();
     gameVersion = String(catalog.gameVersion || "");
+  }
+
+  function installMonsterHalfCooldown() {
+    var CombatUnit = __webpack_require__("./src/combatsimulator/combatUnit.js").default;
+    if (CombatUnit.prototype.__calculatorHalfCooldown) return;
+    var originalReset = CombatUnit.prototype.resetCooldowns;
+    // Match calculator 1.5.13, including the original reset's RNG consumption.
+    // This is an explicitly selected compatibility rule, not verified server behavior.
+    CombatUnit.prototype.resetCooldowns = function (currentTime) {
+      var result = originalReset.apply(this, arguments);
+      if (!this.isPlayer && Array.isArray(this.abilities)) {
+        var time = finite(currentTime, 0);
+        var haste = finite(this.combatDetails && this.combatDetails.combatStats
+          ? this.combatDetails.combatStats.abilityHaste : 0, 0);
+        this.abilities.filter(function (ability) { return ability != null; }).forEach(function (ability) {
+          var cooldown = finite(ability.cooldownDuration, 0);
+          if (haste > 0) cooldown = cooldown * 100 / (100 + haste);
+          ability.lastUsed = time - Math.floor(cooldown * 0.5);
+        });
+      }
+      return result;
+    };
+    CombatUnit.prototype.__calculatorHalfCooldown = true;
   }
 
   function normalizeBuffs(raw) {
@@ -236,12 +260,13 @@ function engineWorkerMain() {
     var combatStats = null;
     var ranOutOfMana = false;
     var simulatedSeconds = 0;
+    var normalizedBuffs = normalizeBuffs((params.extraBuffs || []).concat(params.labyrinthCombatBuffs || []));
     try {
       for (var trialIndex = 0; trialIndex < requestedTrials; trialIndex += 1) {
         var player = Player.createFromDTO(clone(params.playerDto));
         player.food = [null, null, null];
         player.drinks = [null, null, null];
-        player.extraBuffs = normalizeBuffs((params.extraBuffs || []).concat(params.labyrinthCombatBuffs || []));
+        player.extraBuffs = clone(normalizedBuffs);
         var labyrinth = new Labyrinth(String(params.monsterHrid || ""), Math.max(1, Math.floor(finite(params.roomLevel, 1))), crates);
         player.zoneBuffs = Array.isArray(labyrinth.buffs) ? labyrinth.buffs : [];
         var simulator = new CombatSimulator([player], null, labyrinth, { enableHpMpVisualization: false });
@@ -324,6 +349,10 @@ function engineWorkerMain() {
       if (data.type === "engine_init") {
         installCatalog(data.catalog || {});
         self.postMessage({ type: "engine_ready", requestId: data.requestId, gameVersion: gameVersion });
+      } else if (data.type === "simulate_batch") {
+        var results = [];
+        for (var shard of data.shards) results.push(await simulate(Object.assign({}, data.params, shard)));
+        self.postMessage({type:'batch_result', requestId:data.requestId, results:results});
       } else if (data.type === "simulate_room") {
         var result = await simulate(data);
         self.postMessage(Object.assign({ type: "room_result", requestId: data.requestId }, result));
@@ -438,6 +467,8 @@ export class CombatEngine {
     this.queue = [];
     this.counter = 0;
     this.initialized = false;
+    this.planScheduling = Boolean(options.planScheduling);
+    this.metrics = { jobs:0, computeMilliseconds:0, queuedMilliseconds:0, maxQueue:0 };
   }
 
   async initialize(catalog) {
@@ -464,6 +495,14 @@ export class CombatEngine {
   async simulateRoom(params) {
     if (!this.initialized) throw new Error("战斗引擎尚未初始化");
     const shards = splitTrials(params?.trials, this.workers.length, this.minimumTrialsPerWorker);
+    if(this.planScheduling) {
+      // Preserve the old shard boundaries and merge order exactly. Several
+      // adjacent shards travel in one message while other plans run in parallel.
+      const desired = Math.max(1,Math.min(shards.length,Math.floor(this.workerCount / Math.max(1,params.plannedConcurrency || this.workerCount))));
+      const groups = Array.from({length:desired},(_,i)=>shards.slice(Math.floor(i*shards.length/desired),Math.floor((i+1)*shards.length/desired)));
+      const batches = await Promise.all(groups.map(group=>this.#enqueue({type:'simulate_batch',params,shards:group})));
+      return mergeRoomResults(batches.flatMap(batch=>batch.results),{workerCount:this.workers.length});
+    }
     const results = await Promise.all(shards.map((shard) => this.#enqueue({ type: "simulate_room", ...params, ...shard })));
     return mergeRoomResults(results, { workerCount: this.workers.length });
   }
@@ -480,6 +519,9 @@ export class CombatEngine {
   #dispatch(slot, message, external = null) {
     const requestId = `r${Date.now()}_${++this.counter}`;
     slot.busy = true;
+    slot.startedAt = performance.now();
+    this.metrics.jobs++;
+    if(external?.queuedAt) this.metrics.queuedMilliseconds += slot.startedAt-external.queuedAt;
     if (external) {
       this.pending.set(requestId, { ...external, slot });
       slot.worker.postMessage({ ...message, requestId });
@@ -493,7 +535,8 @@ export class CombatEngine {
 
   #enqueue(message) {
     return new Promise((resolve, reject) => {
-      this.queue.push({ message, resolve, reject });
+      this.queue.push({ message, resolve, reject, queuedAt:performance.now() });
+      this.metrics.maxQueue = Math.max(this.metrics.maxQueue,this.queue.length);
       this.#pump();
     });
   }
@@ -510,6 +553,7 @@ export class CombatEngine {
     const pending = this.pending.get(message.requestId);
     if (!pending) return;
     this.pending.delete(message.requestId);
+    this.metrics.computeMilliseconds += performance.now()-slot.startedAt;
     slot.busy = false;
     if (message.type === "engine_error") pending.reject(new Error(message.error || "战斗引擎异常"));
     else pending.resolve(message);
@@ -532,4 +576,6 @@ export class CombatEngine {
     this.initialized = false;
     this.#failAll(error);
   }
+
+  stats() { return {...this.metrics, busyWorkers:this.workers.filter(s=>s.busy).length, totalWorkers:this.workers.length, pendingTasks:this.queue.length}; }
 }
