@@ -1,3 +1,4 @@
+import {resultLevelLabel,resultSearchStatus} from './result-status.js';
 import { chineseName } from "./localization.js";
 
 export const OFFICIAL_ITEM_SPRITE = "./assets/items_sprite.f58c9476.svg";
@@ -96,7 +97,7 @@ function summaryRowSvg(result, catalog, slotNames, title, offsetY, index) {
     return `<text x="${x}" y="${y + 20}" fill="#8f938b" font-family="Microsoft YaHei, sans-serif" font-size="12">${safe(entry.slot)}</text>${iconSvg(entry, x + 70, y, 27)}<text x="${x + 108}" y="${y + 20}" fill="#f4efe4" font-family="Microsoft YaHei, sans-serif" font-size="13">${safe(entry.name)}</text><text x="1680" y="${y + 20}" text-anchor="end" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="12">${safe(entry.level)}</text>`;
   }).join("");
   const background = index % 2 === 0 ? "#151716" : "#101211";
-  return { height, markup: `<g transform="translate(0 ${offsetY})"><rect width="1720" height="${height}" fill="${background}"/><line x1="0" y1="${height - 1}" x2="1720" y2="${height - 1}" stroke="#343832"/><text x="24" y="48" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="23" font-weight="700">${safe(title)}</text><text x="24" y="77" fill="#aaa79d" font-family="Microsoft YaHei, sans-serif" font-size="13">${result.learning ? (result.targetMet ? "已认证等级" : "未认证候选等级") : "最高怪物等级"} ${safe(result.highestMonsterLevel ?? result.highestLevel)} · 胜率 ${safe(((result.finalResult?.clearRate || 0) * 100).toFixed(1))}%</text>${gear}${abilities}</g>` };
+  return { height, markup: `<g transform="translate(0 ${offsetY})"><rect width="1720" height="${height}" fill="${background}"/><line x1="0" y1="${height - 1}" x2="1720" y2="${height - 1}" stroke="#343832"/><text x="24" y="48" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="23" font-weight="700">${safe(title)}</text><text x="24" y="77" fill="#aaa79d" font-family="Microsoft YaHei, sans-serif" font-size="13">${resultLevelLabel(result)} ${safe(result.highestMonsterLevel ?? result.highestLevel)} · 胜率 ${safe(((result.finalResult?.clearRate || 0) * 100).toFixed(1))}%</text><text x="24" y="104" fill="#d6ad57" font-family="Microsoft YaHei, sans-serif" font-size="12">${safe(resultSearchStatus(result))}</text><text x="24" y="129" fill="#aaa79d" font-family="Microsoft YaHei, sans-serif" font-size="12">${result.rankingIndependent ? `独立复核 ${result.finalResult?.trials || 0} 场 · 实测排名` : ""}</text>${gear}${abilities}</g>` };
 }
 
 export function buildLoadoutSvg(results, catalog, slotNames, monsterNames, spriteText) {

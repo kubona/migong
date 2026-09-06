@@ -4,7 +4,7 @@ import { simulationLoadoutSignature, summarizeSimulationLoadout } from './simula
 function empty() { return { actualSimulationBatches:0, completedBatches:0, failedBatches:0, uniqueCombinations:0,
   uniqueLoadouts:0, requestedTrials:0, completedTrials:0, repeatedBatches:0, expectedRetestBatches:0,
   suspiciousRepeatBatches:0, byStage:{}, stageSummary:{} }; }
-const labels = {test:'测试阶段',review:'复核阶段',optimize:'优化阶段',learn:'学习搜索',validate:'独立验证'};
+const labels = {test:'测试阶段',review:'复核阶段',optimize:'优化阶段',learn:'学习搜索',validate:'独立验证',ranking:'排名复核'};
 export async function createStoredAudit(store, options = {}) {
   let stats = await store.get(store.key('audit-summary')) || { overall: empty(), monsters:{} };
   return {
@@ -66,7 +66,7 @@ export async function createStoredAudit(store, options = {}) {
     async exportTo(writable, extra = {}) {
       const write = async part => writable.write(part);
       const summary=this.summary();
-      await write(JSON.stringify({reportType:'mwi_labyrinth_simulation_audit_v042',schemaVersion:4,...extra,summary}).slice(0,-1)+',"loadouts":[');
+      await write(JSON.stringify({reportType:'mwi_labyrinth_simulation_audit_v043',schemaVersion:4,...extra,summary}).slice(0,-1)+',"loadouts":[');
       let separator = '';
       for await (const row of store.values('loadout/')) { await write(separator+JSON.stringify(row)); separator=','; }
       await write('],"records":['); separator='';
@@ -76,11 +76,13 @@ export async function createStoredAudit(store, options = {}) {
       }
       await write('],"searchManifests":[');separator='';
       const scopes=[];
-      for await(const row of store.values('competitive42-manifest/')){scopes.push(row.root);await write(separator+JSON.stringify(row));separator=',';}
+      for await(const row of store.values('competitive43-manifest/')){scopes.push(row.root);await write(separator+JSON.stringify(row));separator=',';}
       await write('],"searchCandidates":[');separator='';
       for(const scope of scopes)for await(const row of store.values(`${scope}/candidate/`)){await write(separator+JSON.stringify({scope,index:row.index,id:row.id,plan:row.plan}));separator=',';}
       await write('],"searchDecisions":[');separator='';
       for(const scope of scopes)for await(const row of store.values(`${scope}/decision/`)){if(row.auditSequence>summary.actualSimulationBatches)continue;await write(separator+JSON.stringify({scope,...row}));separator=',';}
+      await write('],"rankingReviews":[');separator='';
+      for(const scope of scopes)for await(const row of store.values(`${scope}/ranking/`)){if(row.auditSequence>summary.actualSimulationBatches)continue;await write(separator+JSON.stringify({scope,...row}));separator=',';}
       await write(']}');
     },
     async exportBlob(extra = {}) {

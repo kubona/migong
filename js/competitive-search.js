@@ -4,6 +4,7 @@ import { fingerprint } from './run-storage.js';
 import { LearningLibrary, batchSeed, normalizeEvidence } from './learning-library.js';
 import { randomGenerator, planFeatures, predictForest, ModelTrainer } from './learning-model.js';
 import { anytimeInterval } from './sequential-confidence.js';
+import { reviewRankings } from './ranking-review.js';
 import { mergeRoomResults } from './engine-adapter.js';
 
 const integer=(v,d,min,max)=>Math.max(min,Math.min(max,Math.floor(Number(v)||d)));
@@ -44,24 +45,40 @@ export async function indexCompetitivePlans(o,root){
  else for(const p of o.iterate()){bases++;for(const q of activeOrderPermutations(p))await add({...q,baseKey:p.key});
    if(bases%128===0)o.onProgress?.({learning:true,phase:'index',totalPlans:count,completedPlans:0,sampledPlans:count,progressFraction:0});}
  await flush();if(!count)throw new Error('没有合法配装');
- const manifest={version:42,complete:true,totalOrderedPlans:count,totalBasePlans:bases};
- await store.batch([[key,manifest],[store.key(`competitive42-manifest/${root}`),{root,...manifest}]]);return manifest;
+ const manifest={version:43,complete:true,totalOrderedPlans:count,totalBasePlans:bases};
+ await store.batch([[key,manifest],[store.key(`competitive43-manifest/${root}`),{root,...manifest}]]);return manifest;
 }
 
 // Conditional on non-increasing true win probability with monster level.
 // Failure pruning is permitted ONLY by a simultaneous confidence upper bound.
-export function nextCompetitiveProbe(c,best,minimum,maximum){
+export function nextCompetitiveProbe(c,best,minimum,maximum,allowance=Infinity){
  const baseline=Math.max(minimum,best??minimum);
  if(c.high<=baseline)return null;
- if(c.low==null||c.low<baseline)return{level:baseline,reason:'当前最高等级对比'};
- if(c.low>=maximum||c.high===c.low+1)return null;
- return c.high<=maximum?{level:Math.ceil((c.low+c.high)/2),reason:'二分定位'}:
-   {level:Math.min(maximum,c.low+5),reason:'向上增加5级'};
+ let level,reason;
+ if(c.low==null||c.low<baseline){level=baseline;reason='当前最高等级对比';}
+ else{
+   if(c.low>=maximum||c.high===c.low+1)return null;
+   level=c.high<=maximum?Math.ceil((c.low+c.high)/2):Math.min(maximum,c.low+5);
+   reason=c.high<=maximum?'二分定位':'向上增加5级';
+   // Uncertainty is not failure. Revisit its frontier before skipping beyond it.
+   const pending=Object.entries(c.levels||{}).filter(([l,v])=>+l>c.low&&+l<=level&&v.status==='uncertain').map(([l])=>+l);
+   if(pending.length){const ready=pending.filter(l=>(c.levels[l].result.trials||0)<allowance);
+     level=ready.length?Math.min(...ready):Math.max(...pending);reason='追加统计证据';}
+ }
+ if((c.levels?.[level]?.result.trials||0)<allowance)return{level,reason};
+ const lower=Math.max(baseline,(c.low??minimum-1)+1),middle=Math.ceil((lower+level-1)/2);
+ let chosen=null;
+ for(let l=lower;l<level;l++){
+   const p=c.levels?.[l];
+   if(p?.status==='certified'||p?.status==='failed'||(p?.result.trials||0)>=allowance)continue;
+   if(chosen===null||Math.abs(l-middle)<Math.abs(chosen-middle))chosen=l;
+ }
+ return chosen===null?null:{level:chosen,reason:'临界区间细化'};
 }
 
 export async function searchCompetitiveCandidates(o){
  if(!o.runStorage||!o.learningFamily)throw new Error('全量竞争需要本机存储与版本标识');
- const store=o.runStorage,lib=new LearningLibrary(store,o.learningFamily),root=`competitive42/${o.monsterHrid}`;
+ const store=o.runStorage,lib=new LearningLibrary(store,o.learningFamily),root=`competitive43/${o.monsterHrid}`;
  const key=store.key(`${root}/state`),candidateKey=i=>store.key(`${root}/candidate/${pad(i)}`);
  const minimum=integer(o.minMonsterLevel,200,1,5000),maximum=integer(o.maxMonsterLevel,300,minimum,5000);
  const trials=integer(o.testTrials,100,1,10000),step=integer(o.reviewTrials,300,1,10000),cap=integer(o.optimizeTrials,5000,step,100000);
@@ -70,12 +87,12 @@ export async function searchCompetitiveCandidates(o){
  const alpha=.05/(Math.max(1,o.certificationMonsterCount||1)*manifest.totalOrderedPlans*(maximum-minimum+1));
  let s=await store.get(key);
  if(!s){const seed=await lib.reserve(1),history=await lib.sample(o.monsterHrid,1024,randomGenerator(seed));
-   s={version:42,...manifest,phase:'learn',done:0,testedPlans:0,resolvedPlans:0,blockedPlans:0,bestLevel:null,upperCounts:{[maximum]:manifest.totalOrderedPlans},possibleLevel:maximum,
+   s={version:43,...manifest,phase:'learn',done:0,testedPlans:0,resolvedPlans:0,blockedPlans:0,bestLevel:null,upperCounts:{[maximum]:manifest.totalOrderedPlans},possibleLevel:maximum,
      cursor:0,window:[],pending:null,seed,epoch:1,allowance:cap,seenTokens:[],selections:0,samples:history.rows.map(r=>({id:r.pairId,x:r.x,n:r.search.trials,w:r.search.successes})),
      reusedPairs:0,historicalTrainingPairs:history.rows.length,trainingMilliseconds:0,trainedAt:-1,predictionError:{sum:0,count:0},baselineError:0};
    await store.put(key,s);
  }
- if(s.phase==='incomplete'){
+ if(s.phase==='incomplete'&&!s.rankingPending){
    s.phase='learn';s.cursor=0;s.window=[];s.allowance+=cap;s.epoch++;s.blockedPlans=0;await store.put(key,s);
  }
  let model=await lib.model(o.monsterHrid),window=await Promise.all(s.window.map(i=>store.get(candidateKey(i))));
@@ -89,11 +106,11 @@ export async function searchCompetitiveCandidates(o){
    currentPlan:s.testedPlans,phaseCompletedBatches:s.done,phaseTotalBatches:null,progressFraction:s.phase==='complete'?1:Math.min(.99,s.resolvedPlans/s.totalOrderedPlans),
    bestObservedLevel:s.bestLevel,bestCertifiedLevel:s.bestLevel,possibleLevel:s.possibleLevel,sampledPlans:s.totalOrderedPlans,testedPlans:s.testedPlans,blockedPlans:s.blockedPlans,
    historicalTrainingPairs:s.historicalTrainingPairs,reusedPairs:0,phaseComplete:s.phase==='complete'});
- function classify(c){const probe=nextCompetitiveProbe(c,s.bestLevel,minimum,maximum);
-   if(!probe){if(c.status!=='resolved')s.resolvedPlans++;c.status='resolved';return null;}
-   const pair=c.levels[probe.level];
-   if(pair?.result.trials>=s.allowance){if(c.status!=='blocked')s.blockedPlans++;c.status='blocked';return null;}
-   c.status='active';return{...probe,reason:pair?'追加统计证据':probe.reason};
+ function classify(c){const required=nextCompetitiveProbe(c,s.bestLevel,minimum,maximum);
+   const probe=nextCompetitiveProbe(c,s.bestLevel,minimum,maximum,s.allowance);
+   if(!required){if(c.status!=='resolved')s.resolvedPlans++;c.status='resolved';return null;}
+   if(!probe){if(c.status!=='blocked')s.blockedPlans++;c.status='blocked';return null;}
+   const pair=c.levels[probe.level];c.status='active';return{...probe,reason:pair?'追加统计证据':probe.reason};
  }
  async function fill(){
    const removed=window.filter(c=>c.status==='resolved'||c.status==='blocked');
@@ -165,11 +182,11 @@ export async function searchCompetitiveCandidates(o){
          (s.predictionError.count<32||s.predictionError.sum<=s.baselineError);
        let chosen,queue;
        if(slot%4===0){chosen=remaining.reduce((a,b)=>a.index<b.index?a:b);queue='完整覆盖';}
-       else if(useModel){queue='模型建议';chosen=remaining.map(c=>{const p=nextCompetitiveProbe(c,s.bestLevel,minimum,maximum);
+       else if(useModel){queue='模型建议';chosen=remaining.map(c=>{const p=nextCompetitiveProbe(c,s.bestLevel,minimum,maximum,s.allowance);
            const pred=predictForest(model,{...feature(c),'monster.level':p.level});return{c,score:pred.mean+pred.disagreement*.2};}).sort((a,b)=>b.score-a.score)[0].c;}
        else {queue='组件与搭配覆盖';chosen=remaining.map(c=>({c,score:tokens(c.plan).reduce((n,t)=>n+(!seenTokens.has(t)?1:0),0),tie:randomGenerator(s.seed+c.index+slot)()})).sort((a,b)=>b.score-a.score||a.tie-b.tie)[0].c;}
        used.add(chosen.index);for(const t of tokens(chosen.plan))seenTokens.add(t);
-       const p=nextCompetitiveProbe(chosen,s.bestLevel,minimum,maximum),previousTrials=chosen.levels[p.level]?.result.trials||0;
+       const p=nextCompetitiveProbe(chosen,s.bestLevel,minimum,maximum,s.allowance),previousTrials=chosen.levels[p.level]?.result.trials||0;
        const n=Math.min(previousTrials?step:trials,s.allowance-previousTrials);
        tasks.push({candidate:chosen.index,level:p.level,trials:n,previousTrials,offset:await lib.reserve(n),queue,
          reason:previousTrials?'追加统计证据':p.reason,bestLevel:s.bestLevel,prediction:queue==='模型建议'?predictForest(model,{...feature(chosen),'monster.level':p.level}).mean:null});
@@ -180,18 +197,17 @@ export async function searchCompetitiveCandidates(o){
      await execute();
      if(training){model=await training;s.trainedAt=s.done;s.trainingMilliseconds+=model.trainingMilliseconds;await lib.model(o.monsterHrid,model);await save();}
    }
-   // Stream the final comparison at exactly the same certified highest level.
-   const rankings={winRate:[],speed:[]};let fallback=null;
-   const retain=(list,e,compare)=>{list.push(e);list.sort(compare);if(list.length>3)list.length=3;};
-   for await(const c of store.values(`${root}/candidate/`)){
-     for(const [l,v]of Object.entries(c.levels)){
-       const entry={plan:c.plan,level:+l,result:{...v.result,interval:v.interval},status:v.status};
-       if(!fallback||v.result.clearRate>fallback.result.clearRate)fallback=entry;
-       if(+l!==s.bestLevel||v.status!=='certified')continue;
-       retain(rankings.winRate,entry,(a,b)=>b.result.clearRate-a.result.clearRate||a.result.averageClearSeconds-b.result.averageClearSeconds||a.plan.key.localeCompare(b.plan.key));
-       retain(rankings.speed,entry,(a,b)=>a.result.averageClearSeconds-b.result.averageClearSeconds||b.result.clearRate-a.result.clearRate||a.plan.key.localeCompare(b.plan.key));
-     }
+   // Freeze search before ranking. Interrupted review must not advance its epoch.
+   s.rankingPending=true;await save();
+   const reviewed=await reviewRankings(o,{store,lib,root,level:s.bestLevel,
+     onProgress:p=>o.onProgress?.({learning:true,competitive:true,...p,totalPlans:s.totalOrderedPlans,
+       completedPlans:s.resolvedPlans,bestCertifiedLevel:s.bestLevel,possibleLevel:s.possibleLevel,blockedPlans:s.blockedPlans})});
+   s.rankingPending=false;s.rankingReviewed=reviewed.reviewed;s.rankingTrials=reviewed.trials;await save();
+   let fallback=null;
+   if(s.bestLevel===null)for await(const c of store.values(`${root}/candidate/`))for(const [l,v]of Object.entries(c.levels)){
+     const entry={plan:c.plan,level:+l,result:{...v.result,interval:v.interval},status:v.status};
+     if(!fallback||v.result.clearRate>fallback.result.clearRate)fallback=entry;
    }
-   progress();return{state:s,rankings,fallback,minimum,maximum,target,maximumValidation:cap,alpha};
+   progress();return{state:s,rankings:reviewed.rankings,fallback,minimum,maximum,target,maximumValidation:cap,alpha};
  }finally{trainer.close();}
 }
