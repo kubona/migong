@@ -44,7 +44,7 @@
       <summary class="section-heading"><span class="step">3</span><strong id="settings-title">模拟设置</strong><span class="collapse-label"></span></summary>
       <div class="panel-content">
         <div class="settings-group"><h3>搜索配置</h3><div class="settings-grid settings-grid--three">
-          <label>搜索方式<select id="search-mode"><option value="learning" selected>全量竞争 · 在线学习</option><option value="exhaustive">传统全量搜索（对照）</option></select></label>
+          <label>搜索方式<select id="search-mode"><option value="learning" selected>缩量阶段搜索</option><option value="exhaustive">传统全量搜索（对照）</option></select></label>
           <label>预设配装<select id="equipment-preset-source"><option value="system" selected>系统预设配装</option><option value="personal">个人预设配装</option></select></label>
         </div></div>
         <div class="settings-group"><h3>目标等级</h3><div class="settings-grid settings-grid--three">
@@ -57,10 +57,10 @@
           <label>并行怪物数<select id="parallel-count"></select></label>
         </div></div>
         <div class="settings-group"><h3>模拟次数</h3><div class="settings-grid settings-grid--three">
-          <label><span id="test-trials-label">首次测试场数</span><input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
-          <label><span id="review-trials-label">每批追加场数</span><input id="review-trials" type="number" min="10" max="10000" step="10" value="300"></label>
-          <label><span id="optimize-trials-label">每套·每等级本轮场数上限</span><input id="optimize-trials" type="number" min="10" max="100000" step="10" value="5000"></label>
-          <label>同级排名复核场数<input id="ranking-trials" type="number" min="10" max="100000" step="10" value="1000"></label>
+          <label><span id="test-trials-label">粗筛场数</span><input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
+          <label><span id="review-trials-label">每等级场数／临界追加</span><input id="review-trials" type="number" min="10" max="10000" step="10" value="1000"></label>
+          <label><span id="optimize-trials-label">独立纪录确认场数</span><input id="optimize-trials" type="number" min="10" max="100000" step="10" value="1000"></label>
+          <label>每种技能顺序排名场数<input id="ranking-trials" type="number" min="10" max="100000" step="10" value="5000"></label>
         </div></div>
       </div>
     </details>
@@ -68,7 +68,7 @@
     <section class="panel run-panel" aria-label="开始模拟">
       <div class="section-heading run-heading"><span class="step">4</span><h2>模拟运行</h2></div>
       <div class="run-actions">
-      <button id="start-button" class="primary-button" disabled>开始全量竞争</button>
+      <button id="start-button" class="primary-button" disabled>开始阶段搜索</button>
       <button id="preview-button" class="secondary-button" disabled>预览候选</button>
       <button id="resume-button" class="secondary-button" disabled>恢复上次任务</button>
       <button id="pause-button" class="secondary-button" hidden>暂停</button>
@@ -92,23 +92,21 @@
     </div></details>
     <details id="help-panel" class="panel collapsible-panel utility-panel"><summary class="section-heading"><strong>说明</strong><span class="collapse-label"></span></summary><div class="panel-content help-content">
       <h3>版本与战斗规则</h3>
-      <p>v0.43：临界等级细化与排名复核。战斗引擎、怪物等级成长和候选组件规则不变。怪物首次技能冷却继续按计算器1.5.13设为急速修正后冷却的固定50%，尚未经游戏官方验证。</p>
+      <p>v0.44：预设装备缩量、首套二分、阶段筛选与技能顺序排名。战斗引擎和怪物等级成长不变。怪物首次技能冷却继续按计算器1.5.13设为急速修正后冷却的固定50%，尚未经游戏官方验证。</p>
       <h3>组合与学习</h3>
       <p>登记全部合法装备、特殊技能、主动技能及顺序，去重后分页保存。魔法0CD始终第四位。不再截取512套、不再限制每怪2000批、不再只选四套验证。</p>
       <p>无历史时按组件与搭配覆盖安排先后；有正常模拟结果后在线训练小型树模型。模型仅建议先测谁，每四个调度位置至少一个留给完整覆盖。128套是不断补充的内存调度窗口，不是搜索范围上限。模型近期预测误差不优于中性基线时，暂退回覆盖调度。</p>
       <h3>等级搜索与同级比较</h3>
-      <p>每套先挑战当前已确认的最高等级；尚无达标方案时从等级下限开始。通过后每次增加5级，失败后在已通过与已失败等级之间二分。只有置信下界达到目标才确认通过，上界低于目标才确认失败，其余追加测试。上探等级达到本轮额度仍不确定时，不作为失败上界，继续检查已通过等级与该临界等级之间的未确定整数等级。同等级保留胜率及胜场平均耗时两张实测前三榜单。</p>
-      <p>本模式采用“同一配装的真实胜率不随怪物等级升高而提高”的搜索假设；失败可排除更高等级。此单调性尚未被证明，最高等级结论以该假设为前提。传统全量搜索仅作旧流程对照，不具备新增的95%认证。</p>
+      <p>首套组合在设置上下限内二分建立初始纪录；后续组合先挑战当前最高达标等级，通过后每次增加1级。前期固定技能顺序，最终仅对同级达标或容差入围的组合展开全部合法顺序，展示胜率与胜场平均耗时两张前三榜单。完整顺序结果可导出审计文件。</p>
+      <p>搜索采用真实胜率随怪物等级不升的工作假设。达到等级上限不表示区间外的极限；有限样本结果不保证真实最优。传统模式仅作旧流程对照。</p>
       <h3>次数与统计判定</h3>
-      <p>首次测试默认100场，未确定时每批追加300场，每个配装等级本轮默认最多5000场，该值是可调整的搜索额度，不是怪物机制；与独立排名复核场数分开。达到上限仍不确定就暂留该等级，优先细化可测试的中间等级，然后处理其他组合；本轮结束后可恢复任务，为未解决等级继续增加一轮额度，不重算已完成试次。</p>
-      <p>95%使用时间一致的Beta-Bernoulli置信序列，误差预算覆盖本任务所有怪物、全部有序配装、等级及反复检查。统计前提是独立有效的战斗随机样本。历史只帮助预测，新任务认证不直接合并旧记录。同任务恢复沿用原证据及错误预算。</p>
-      <p>只有所有竞争方案已判明才显示完成。胜率恰好接近目标可能长期无法确定；额度耗尽不等于失败、不等于找到最优。达到等级上限不表示区间外的极限。所有在当前最高等级已认证达标的方案均进行独立排名复核，默认每套1000场，可自行修改；使用相同场数的新样本比较胜率和胜场耗时，不按提前停止的搜索胜率排名。排名复核不用于训练或搜索认证，与搜索证据分开显示和保存。排名仍有抽样误差，不保证严格前三顺序。</p>
-      <h3>学习档案与恢复</h3>
-      <p>正常战斗结果直接用于学习，不需先完成一轮全量模拟。兼容历史和模型可帮助下一次安排先后。角色战斗属性、游戏数据或战斗规则改变时隔离不兼容历史。</p>
-      <p>学习档案不包含原始角色文件、账号标识或设备信息，但含配装和战斗结果。导入校验只能发现损坏，不能证明来源可信；导入记录不作为新任务的统计认证证据。</p>
-      <p>任务保存在本浏览器、本网址的本机存储中。恢复时导入原数据并恢复原设置；旧版搜索断点不能跨计算版本恢复。暂停不重算已保存批次，关闭时未保存的工作可能重跑，但同一试次不能重复计数。清除浏览器数据会移除断点，空间不足会停止并提示。</p>
+      <p>默认粗筛100场，仅当单侧95%精确上界低于目标减2个百分点时淘汰。该置信度仅针对单次判断，不代表全任务的整体95%保证。</p>
+      <p>默认每等级1000场；目标以下1个百分点以内补测一次1000场，仍在容差内则停止升阶并保留。刷新纪录另用独立1000场确认，失败不反复重抽。最终统一等级，每种技能顺序独立5000场，显示实际样本胜率。最终排序后不再次升阶。</p>
+      <h3>存储与恢复</h3>
+      <p>阶段模式不训练或追加学习档案；原有档案保持不变。审计仅保存阶段汇总与最终排名，已淘汰配装和已结算缓存会清理。</p>
+      <p>任务保存在本浏览器、本网址的本机存储中。恢复时使用原数据与原设置；043断点不能跨版本恢复。暂停不重算已保存批次，未保存的工作可能重跑，但已保存样本不会重复计数。</p>
       <h3>进度与资源</h3>
-      <p>进度显示完整候选中的已判明数量，已测试数量与真实战斗场次另列。临界方案的追加量未知，剩余时间为动态估算而非完成承诺。审计文件包含版本、参数、候选清单、逐批结果与判断依据。</p>
+      <p>进度按前期组合与最终技能顺序分别显示；剩余时间为动态估算。汇总审计不保存已淘汰配装的完整逐批回放。</p>
       <p>资源档位控制可用计算线程；安全满载仍留出系统线程。多个配装共享Worker队列，完整候选和日志保存在本机存储，不全部常驻内存。</p>
       <div class="storage-actions"><button id="clear-saved-button" class="secondary-button" type="button">清除任务与学习档案</button></div>
     </div></details>

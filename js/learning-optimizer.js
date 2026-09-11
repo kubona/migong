@@ -1,35 +1,44 @@
 import { classifyMonster } from './classifier.js';
 import { monsterLevelToFloorRange } from './data-model.js';
 import { prepareDirection, directionProfile, resolveSimulationDirections, resultMetrics } from './exhaustive-optimizer.js';
-import { searchCompetitiveCandidates } from './competitive-search.js';
+import { searchStagedCandidates } from './staged-search.js';
+import { wilsonInterval } from './statistics.js';
 
-export const searchLearningCandidates=searchCompetitiveCandidates;
+export const searchLearningCandidates=searchStagedCandidates;
 export async function optimizeMonsterLearning(o){
  const profile=classifyMonster(o.catalog.combatMonsterDetailMap[o.monsterHrid],{roomLevel:100,playerCombatDetails:o.character.combatDetails});
  const intelligence=o.character.characterSkills.find(s=>s.skillHrid==='/skills/intelligence')?.level||1;
  if(intelligence<(o.catalog.abilitySlotsLevelRequirementList?.[5]||90))throw new Error('尚未解锁完整战斗技能槽');
  const direction=resolveSimulationDirections(profile,o.simulationDirection)[0];
  const prepared=prepareDirection({...o,direction,profile:directionProfile(profile,direction),selectedEquipmentTypes:o.optimizableEquipmentTypes||[],minimumEquipmentLevel:80});
- const run=await searchCompetitiveCandidates({...o,direction,iterate:prepared.iterate,onProgress:p=>o.onProgress?.({...p,monsterHrid:o.monsterHrid,direction})});
- const s=run.state,targetMet=s.bestLevel!==null;
- const convert=(e,i)=>({plan:e.plan,result:e.result,certificationResult:e.certificationResult,rankingIndependent:!!e.rankingIndependent,metrics:{...resultMetrics(e.result),robustSuccessLower:e.certificationResult?.interval?.lower??resultMetrics(e.result).robustSuccessLower},monsterLevel:e.level,direction,targetMet:e.status==='certified',certification:e.status,rank:i+1});
+ const run=await searchStagedCandidates({...o,direction,iterate:prepared.iterate,onProgress:p=>o.onProgress?.({...p,monsterHrid:o.monsterHrid,direction})});
+ const s=run.state;
+ const convert=(e,i)=>({plan:e.plan,result:e.result,certificationResult:e.certificationResult,rankingIndependent:!!e.rankingIndependent,
+   metrics:{...resultMetrics(e.result),robustSuccessLower:wilsonInterval(e.result.successes,e.result.trials).lower},
+   monsterLevel:e.level,direction,targetMet:e.status==='passed',certification:e.status,rank:i+1});
  const rankings={winRate:run.rankings.winRate.map(convert),speed:run.rankings.speed.map(convert)};
- if(!targetMet&&run.fallback){rankings.winRate=[convert(run.fallback,0)];rankings.speed=[convert(run.fallback,0)];}
- const best=rankings.winRate[0];if(!best)throw new Error('没有可展示的战斗结果');
- const level=targetMet?s.bestLevel:best.monsterLevel,complete=s.phase==='complete';
- return{monsterHrid:o.monsterHrid,name:profile.name,profile,chosenDirection:direction,
-   simulationDirectionSelection:o.simulationDirection||'auto',simulationDirectionMode:!o.simulationDirection||o.simulationDirection==='auto'?'auto':'manual',equipmentPresetSource:o.equipmentPresetSource,
-   highestMonsterLevel:level,highestLevel:level,estimatedHighestFloorRange:monsterLevelToFloorRange(level),targetMet,
-   searchCapped:targetMet&&level===run.maximum,bestPlan:best.plan,finalResult:best.result,finalMetrics:best.metrics,certificationResult:best.certificationResult,rankingIndependent:best.rankingIndependent,rankingReview:{trials:s.rankingTrials,candidates:s.rankingReviewed},rankings,learning:true,
-   searchComplete:complete,possibleHighestLevel:s.possibleLevel,certification:targetMet?'certified':'not-certified',directionWorkflows:[{direction,rankings,optimizationLevel:level}],
-   candidateCounts:{savedPlans:s.totalBasePlans,orderedPlans:s.totalOrderedPlans,sampledOrderedPlans:s.totalOrderedPlans,simulatedPlans:s.testedPlans,resolvedPlans:s.resolvedPlans,blockedPlans:s.blockedPlans,reusedPairs:0},
-   searchDiagnostics:{learningBatches:s.done,trainingMilliseconds:s.trainingMilliseconds,historicalTrainingPairs:s.historicalTrainingPairs,
-     predictionRMSE:s.predictionError.count?Math.sqrt(s.predictionError.sum/s.predictionError.count):null},
-   searchPolicy:{method:'完整候选竞争 + 在线学习排序 + 当前等级对比 + 每次上探5级 + 失败后二分 + 临界区间细化 + 同级独立排名复核',targetRate:run.target,familywiseConfidence:.95,
-     confidenceScope:'本次任务全部选中怪物、合法有序配装、允许等级及全部样本数',globalOptimalityProven:false,conditionalOptimalityCertified:complete&&targetMet,
-     monotonicityAssumedForElimination:true,rankingStatisticallyCertified:false,searchBudgetBatches:null,historyUsedForCertification:false,
-     validationMaximumAdditionalTrialsPerPair:run.maximumValidation,levelBounds:{minimum:run.minimum,maximum:run.maximum}},
-   issues:[{type:targetMet?'stable':'survivability',text:!targetMet?(complete?'所选范围内没有确认达标的方案。':'尚有未确定方案，可恢复任务继续确认。'):
-     complete?'最高等级已确认（基于等级单调假设）；同等级榜单按等场数独立复核排序，排名仍有抽样误差。':`最高等级尚未确定；当前确认 Lv.${level}，仍有 ${s.blockedPlans} 套待确认；可恢复任务继续计算。`}],
+ if(!rankings.winRate.length&&run.fallback)rankings.winRate=[convert(run.fallback,0)];
+ const best=rankings.winRate[0];
+ if(!best)throw Error('没有可展示的战斗结果');
+ const level=s.bestLevel??best.monsterLevel,targetMet=best.targetMet&&best.rankingIndependent;
+ return {monsterHrid:o.monsterHrid,name:profile.name,profile,chosenDirection:direction,
+   simulationDirectionSelection:o.simulationDirection||'auto',simulationDirectionMode:!o.simulationDirection||o.simulationDirection==='auto'?'auto':'manual',
+   equipmentPresetSource:o.equipmentPresetSource,highestMonsterLevel:level,highestLevel:level,
+   estimatedHighestFloorRange:monsterLevelToFloorRange(level),targetMet,searchHighestLevel:s.bestLevel,
+   searchCapped:s.bestLevel===run.maximum,bestPlan:best.plan,finalResult:best.result,finalMetrics:best.metrics,
+   certificationResult:best.certificationResult,rankingIndependent:best.rankingIndependent,
+   rankingReview:{trials:s.rankingTrials,candidates:s.rankingReviewed},rankings,learning:true,staged:true,
+   searchComplete:s.phase==='complete',possibleHighestLevel:null,certification:best.certification,
+   directionWorkflows:[{direction,rankings,optimizationLevel:level}],
+   candidateCounts:{savedPlans:s.totalBasePlans,orderedPlans:s.totalBasePlans,sampledOrderedPlans:s.totalBasePlans,
+     simulatedPlans:s.testedPlans,resolvedPlans:s.resolvedPlans,discardedPlans:s.discardedPlans,blockedPlans:0,reusedPairs:0,finalOrders:s.rankingReviewed},
+   searchDiagnostics:{learningBatches:s.done,trainingMilliseconds:0,historicalTrainingPairs:0,predictionRMSE:null},
+   searchPolicy:{method:'预设白名单缩量 + 无序技能集合 + 首套二分 + 精确粗筛 + 逐级测试 + 独立纪录确认 + 最终全部顺序独立排名',
+     targetRate:run.target,tolerance:.01,coarseOneSidedConfidence:.95,familywiseConfidence:null,
+     confidenceScope:'粗筛置信度仅针对单次判断；结果为有限样本经验搜索',globalOptimalityProven:false,conditionalOptimalityCertified:false,
+     monotonicityAssumedForElimination:true,rankingStatisticallyCertified:false,historyUsedForCertification:false,
+     levelBounds:{minimum:run.minimum,maximum:run.maximum}},
+   issues:[{type:targetMet?'stable':'survivability',text:s.bestLevel===null?'所选范围内没有建立达标纪录。':
+     targetMet?'同级顺序排名已完成；胜率为独立样本结果，接近的名次仍可能波动。':'搜索等级的最终复核未达标，保留实际胜率，不自动回退等级。'}],
    simulationAuditSummary:o.auditRecorder?.summary({monsterHrid:o.monsterHrid})||null};
 }

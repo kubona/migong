@@ -27,6 +27,17 @@ export class RunStorage {
     });
   }
   put(key, value) { return this.batch([[key, value]]); }
+  mutate(entries = [], deletes = []) {
+    return new Promise((resolve, reject) => {
+      const tx = this.db.transaction('data', 'readwrite');
+      const data = tx.objectStore('data');
+      for (const key of deletes) data.delete(key);
+      for (const [key, value] of entries) data.put(value, key);
+      tx.oncomplete = resolve;
+      tx.onabort = () => reject(new Error(`断点保存失败：${tx.error?.message || '事务中断'}`));
+      tx.onerror = () => {};
+    });
+  }
   getMany(keys) {
     return new Promise((resolve,reject)=>{
       const tx=this.db.transaction('data','readonly'),rows=new Array(keys.length);
@@ -101,7 +112,7 @@ export async function runtimeFingerprint() {
   const paths = ['engine/src_worker_js.bundle.js', 'engine/vendors-heap.bundle.js',
     ...['exhaustive-optimizer','component-planner','engine-adapter','player-dto','classifier','equipment-presets',
       'ability-selection-rules','data-model','fixed-skill-options','result-retention','stored-audit','run-storage','statistics','app',
-      'learning-optimizer','ranking-review','result-status','competitive-search','learning-library','learning-model','learning-worker','sequential-confidence','optimizer'].map(n => `js/${n}.js`)];
+      'staged-search','staged-audit','staged-statistics','learning-optimizer','ranking-review','result-status','competitive-search','learning-library','learning-model','learning-worker','sequential-confidence','optimizer'].map(n => `js/${n}.js`)];
   return fingerprint(await Promise.all(paths.map(async path => {
     const response = await fetch(path);
     if (!response.ok) throw new Error(`无法核对计算文件：${path}`);

@@ -10,6 +10,8 @@ import {
   SIMULATION_DIRECTION_AUTO,
   manualSimulationDirection,
   resolveEquipmentPresetBaselines,
+  presetRotationPool,
+  ROTATION_EQUIPMENT,
 } from "./equipment-presets.js";
 import { buildSimulationInput } from "./player-dto.js";
 import { wilsonInterval } from "./statistics.js";
@@ -263,12 +265,12 @@ function withRank(entries) {
 }
 
 export function prepareDirection(options) {
-  const selectedTypes = new Set(options.selectedEquipmentTypes || []);
+  const selectedTypes = new Set([...(options.selectedEquipmentTypes || [])].filter(type => ROTATION_EQUIPMENT[type]));
   const poolTypes = new Set(selectedTypes);
   if (selectedTypes.has(MAIN_HAND)) poolTypes.add(TWO_HAND);
   const pool = buildTargetedComponentPool(options.character, options.catalog, options.profile, options.direction, {
     minimumEquipmentLevel: options.minimumEquipmentLevel,
-    selectedEquipmentTypes: poolTypes,
+    selectedEquipmentTypes: [],
   });
   const abilityBaseline = buildCurrentBaseline(options.character, options.catalog, pool);
   const equipmentBaselines = resolveEquipmentPresetBaselines(
@@ -283,7 +285,8 @@ export function prepareDirection(options) {
     const skillGroups = new Map();
     for (const equipmentBaseline of equipmentBaselines) {
       const baseline = { ...abilityBaseline, ...equipmentBaseline };
-      yield* iterateUniqueComponentPlans(baseline, pool, options.direction, options.monsterHrid, {
+      const branchPool = { ...pool, equipmentPools: presetRotationPool(options.character, options.catalog, baseline, selectedTypes) };
+      yield* iterateUniqueComponentPlans(baseline, branchPool, options.direction, options.monsterHrid, {
       seenEquipment,
       skillGroups,
       selectedEquipmentTypes: selectedTypes,

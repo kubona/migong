@@ -204,7 +204,7 @@ function equipmentEntry(owned, item, catalog) {
   };
 }
 
-function strongestOwnedFamily(character, catalog, type, configuredFamily) {
+export function strongestOwnedFamily(character, catalog, type, configuredFamily) {
   let best = null;
   for (const owned of character?.characterItems || []) {
     if (finiteNumber(owned?.count, 0) <= 0 || familyHrid(owned?.itemHrid) !== configuredFamily) continue;
@@ -214,6 +214,32 @@ function strongestOwnedFamily(character, catalog, type, configuredFamily) {
     if (compareActualStats(entry, best) > 0) best = entry;
   }
   return best;
+}
+
+export const ROTATION_EQUIPMENT = Object.freeze({
+  '/equipment_types/head': '/items/corsair_helmet',
+  '/equipment_types/body': '/items/anchorbound_plate_body',
+  '/equipment_types/legs': '/items/anchorbound_plate_legs',
+  '/equipment_types/hands': '/items/dodocamel_gauntlets',
+});
+
+// Each preset owns its own pool. Unlisted slots never borrow another preset's gear.
+export function presetRotationPool(character, catalog, baseline, selectedTypes) {
+  const equipmentPools = {};
+  const levels = new Map((character.characterSkills || []).map(s => [s.skillHrid, s.level]));
+  for (const type of selectedTypes) {
+    const original = baseline.equipment[type];
+    const family = ROTATION_EQUIPMENT[type];
+    const alternative = family ? strongestOwnedFamily(character, catalog, type, family) : null;
+    const usable = alternative && (catalog.itemDetailMap[alternative.hrid].equipmentDetail.levelRequirements || [])
+      .every(r => (levels.get(r.skillHrid) || 1) >= r.level);
+    const unique = new Map();
+    for (const entry of [original, usable ? alternative : null]) {
+      if (entry) unique.set(`${entry.hrid}@${entry.enhancementLevel}`, entry);
+    }
+    if (unique.size) equipmentPools[type] = [...unique.values()];
+  }
+  return equipmentPools;
 }
 
 function systemBaseline(character, catalog, key) {
