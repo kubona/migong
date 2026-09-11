@@ -236,8 +236,8 @@ button:focus-visible, summary:focus-visible, .file-action:focus-within { outline
 .fixed-remove { min-height: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; }
 .fixed-add { margin-top: 9px; }
 .fixed-rule-note { margin: 9px 0 0; color: var(--gold); font-size: 11px; }
-.ranking-controls { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-.ranking-controls > div { display: flex; gap: 6px; }
+.ranking-controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.ranking-controls > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .ranking-button { min-height: 34px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; }
 .ranking-button.active { border-color: var(--gold); background: var(--gold-soft); color: var(--ink); }
 .loadout-chart { margin-top: 24px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-subtle); }

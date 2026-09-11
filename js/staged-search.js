@@ -1,10 +1,12 @@
+import {retainDistinctRanking} from './distinct-ranking.js';
+import {diagnosticResult,eliminationRecord} from './staged-diagnostics.js';
 import {activeOrderPermutations,unorderedPlanKey} from './component-planner.js';
 import {fingerprint} from './run-storage.js';
 import {LearningLibrary,batchSeed,normalizeEvidence} from './learning-library.js';
 import {buildSimulationInput} from './player-dto.js';
 import {mergeRoomResults} from './engine-adapter.js';
 import {wilsonInterval} from './statistics.js';
-import {coarseRejected,stageStatus} from './staged-statistics.js';
+import {coarseRejected,stageStatus,needsBoundaryRetest} from './staged-statistics.js';
 
 const pad = n => String(n).padStart(12,'0');
 const count = (v,d) => Math.max(10,Math.min(100000,Math.floor(Number(v)||d)));
@@ -38,14 +40,14 @@ export async function indexStagedPlans(o, root) {
     if(buffer.length>=128)await flush();
   }
   await flush();if(!total)throw Error('没有合法配装');
-  const manifest={version:44,complete:true,totalBasePlans:total};await store.put(key,manifest);return manifest;
+  const manifest={version:45,complete:true,totalBasePlans:total};await store.put(key,manifest);return manifest;
 }
 
 export async function searchStagedCandidates(o) {
   const store=o.runStorage;
   if(!store?.mutate)throw Error('阶段搜索需要支持原子清理的本机存储');
-  const root=`staged44/${o.monsterHrid}`,stateKey=store.key(`${root}/state`);
-  const ck=i=>store.key(`${root}/candidate/${pad(i)}`), cache=offset=>store.key(`staged44-cache/${offset}`);
+  const root=`staged45/${o.monsterHrid}`,stateKey=store.key(`${root}/state`);
+  const ck=i=>store.key(`${root}/candidate/${pad(i)}`), cache=offset=>store.key(`staged45-cache/${offset}`);
   const minimum=Math.max(1,Math.min(5000,Math.floor(Number(o.minMonsterLevel)||200)));
   const maximum=Math.max(minimum,Math.min(5000,Math.floor(Number(o.maxMonsterLevel)||300)));
   const target=Math.max(.01,Math.min(.99,Number(o.targetRate)||.7));
@@ -55,7 +57,7 @@ export async function searchStagedCandidates(o) {
   const manifest=await indexStagedPlans(o,root);
   let s=await store.get(stateKey);
   if(!s) {
-    s={version:44,...manifest,phase:'bootstrap',bestLevel:null,cursor:1,window:[0],pending:null,done:0,
+    s={version:45,...manifest,phase:'bootstrap',bestLevel:null,cursor:1,window:[0],pending:null,done:0,
       testedPlans:0,resolvedPlans:0,discardedPlans:0,recordVersion:0,fallback:null,rankingTrials,rankingReviewed:0,rankingTotal:0};
     const c=await store.get(ck(0));c.bootstrap=true;c.phase='step';c.binaryLow=minimum;c.binaryHigh=maximum;
     c.nextLevel=Math.floor((minimum+maximum)/2);
@@ -67,7 +69,7 @@ export async function searchStagedCandidates(o) {
     bestObservedLevel:s.bestLevel,bestCertifiedLevel:null,bestLevel:s.bestLevel,
     progressFraction:s.phase==='complete'?1:s.phase==='ranking'?.8+.2*s.rankingReviewed/Math.max(1,s.rankingTotal):.8*s.resolvedPlans/s.totalBasePlans,...extra});
   const save=async(deletes=[])=>{s.window=window.map(c=>c.index);await store.mutate([...window.map(c=>[ck(c.index),c]),[stateKey,s]],deletes);};
-  const finish=c=>{if(c.phase!=='done'){c.phase='done';s.resolvedPlans++;}};
+  const finish=(c,reason='search-ended')=>{if(c.phase!=='done'){c.stopReason=reason;c.phase='done';s.resolvedPlans++;}};
   const binaryNext=(c,passed)=>{
     if(passed)c.binaryLow=c.nextLevel+1;else c.binaryHigh=c.nextLevel-1;
     if(c.binaryLow>c.binaryHigh){finish(c);return;}
@@ -86,7 +88,7 @@ export async function searchStagedCandidates(o) {
     } else {
       if(status==='tolerance')c.criticalLevel=Math.max(c.criticalLevel??minimum-1,level);
       else c.firstFailure=Math.min(c.firstFailure??maximum+1,level);
-      if(c.bootstrap)binaryNext(c,false);else finish(c);
+      if(c.bootstrap)binaryNext(c,false);else finish(c,c.phase==='boundary'?'boundary-below-target':'level-below-target');
     }
   };
   const keep=c=>s.bestLevel!==null&&['passed','tolerance'].includes(c.levels[s.bestLevel]?.status);
@@ -95,7 +97,7 @@ export async function searchStagedCandidates(o) {
     for(const c of window.filter(c=>c.phase==='done')) {
       // The first binary candidate may remain a finalist while later candidates run.
       if(keep(c))writes.push([ck(c.index),c]);
-      else {deletes.push(ck(c.index),store.key(`${root}/identity/${c.id}`));s.discardedPlans++;}
+      else {writes.push([store.key(`${root}/eliminated/${pad(c.index)}`),eliminationRecord(c,s.bestLevel,'not-retained-at-best-level',o.monsterHrid)]);deletes.push(ck(c.index),store.key(`${root}/identity/${c.id}`));s.discardedPlans++;}
     }
     window=window.filter(c=>c.phase!=='done');
     if(s.phase==='bootstrap'&&!window.length)s.phase='search';
@@ -107,7 +109,7 @@ export async function searchStagedCandidates(o) {
     for await(const c of store.values(`${root}/candidate/`)) {
       if(c.phase!=='done'||keep(c))continue;
       s.discardedPlans++;
-      await store.mutate([[stateKey,s]],[ck(c.index),store.key(`${root}/identity/${c.id}`)]);
+      await store.mutate([[stateKey,s],[store.key(`${root}/eliminated/${pad(c.index)}`),eliminationRecord(c,s.bestLevel,'record-raised',o.monsterHrid)]], [ck(c.index),store.key(`${root}/identity/${c.id}`)]);
     }
   }
   async function execute() {
@@ -130,22 +132,24 @@ export async function searchStagedCandidates(o) {
     for(const {value:{task,c,r}} of out) {
       if(!c.visits)s.testedPlans++;c.visits++;s.done++;
       const level=task.level;
+      c.lastCheck={stage:task.kind,level,bestLevelAtDispatch:task.best,result:diagnosticResult(r)};
       if(task.kind==='screen') {
-        if(coarseRejected(r.successes,r.trials,target))finish(c);
+        if(coarseRejected(r.successes,r.trials,target))finish(c,'coarse-upper-bound-below-retest-floor');
         else {c.phase='step';c.nextLevel=Math.max(minimum,task.best??minimum);}
       } else if(task.kind==='confirm') {
         c.levels[level].confirmation={result:r,status:stageStatus(r,target)};
         if(stageStatus(r,target)==='passed') {
           newBest=Math.max(newBest??minimum-1,level);
           if(c.bootstrap)binaryNext(c,true);else advance(c);
-        } else {if(c.bootstrap)binaryNext(c,false);else finish(c);}
+        } else {if(c.bootstrap)binaryNext(c,false);else finish(c,'independent-confirmation-below-target');}
       } else {
         const result=task.kind==='boundary'?clean(mergeRoomResults([c.levels[level].result,r])):r;
         const status=stageStatus(result,target);
-        c.levels[level]={result,status,interval:wilsonInterval(result.successes,result.trials)};
+        const boundary=task.kind==='boundary'?{initial:diagnosticResult(c.levels[level].result),supplement:diagnosticResult(r)}:null;
+        c.levels[level]={result,status,interval:wilsonInterval(result.successes,result.trials),boundary};
         const fallback={plan:c.plan,level,result,status,rankingIndependent:false};
         if(!s.fallback||result.clearRate>s.fallback.result.clearRate)s.fallback=fallback;
-        if(status==='tolerance'&&task.kind!=='boundary')c.phase='boundary';
+        if(task.kind!=='boundary'&&needsBoundaryRetest(result,target))c.phase='boundary';
         else acceptSearch(c,status,task.best);
       }
     }
@@ -185,7 +189,7 @@ export async function searchStagedCandidates(o) {
   }
   await pruneOldFinalists();
   const rankings={winRate:[],speed:[]};
-  const retain=(list,entry,cmp)=>{list.push(entry);list.sort(cmp);if(list.length>3)list.length=3;};
+  const retain=retainDistinctRanking;
   const winCompare=(a,b)=>b.result.clearRate-a.result.clearRate||a.result.averageClearSeconds-b.result.averageClearSeconds||a.plan.key.localeCompare(b.plan.key);
   const speedCompare=(a,b)=>a.result.averageClearSeconds-b.result.averageClearSeconds||b.result.clearRate-a.result.clearRate||a.plan.key.localeCompare(b.plan.key);
   if(s.bestLevel!==null) {

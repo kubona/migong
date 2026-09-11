@@ -34,7 +34,7 @@ export async function optimizeMonsterLearning(o){
      simulatedPlans:s.testedPlans,resolvedPlans:s.resolvedPlans,discardedPlans:s.discardedPlans,blockedPlans:0,reusedPairs:0,finalOrders:s.rankingReviewed},
    searchDiagnostics:{learningBatches:s.done,trainingMilliseconds:0,historicalTrainingPairs:0,predictionRMSE:null},
    searchPolicy:{method:'预设白名单缩量 + 无序技能集合 + 首套二分 + 精确粗筛 + 逐级测试 + 独立纪录确认 + 最终全部顺序独立排名',
-     targetRate:run.target,tolerance:.01,coarseOneSidedConfidence:.95,familywiseConfidence:null,
+     targetRate:run.target,tolerance:.02,retestBand:.05,rankingDistinctSkillSets:true,rankingLimit:5,coarseOneSidedConfidence:.95,familywiseConfidence:null,
      confidenceScope:'粗筛置信度仅针对单次判断；结果为有限样本经验搜索',globalOptimalityProven:false,conditionalOptimalityCertified:false,
      monotonicityAssumedForElimination:true,rankingStatisticallyCertified:false,historyUsedForCertification:false,
      levelBounds:{minimum:run.minimum,maximum:run.maximum}},

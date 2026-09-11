@@ -112,7 +112,7 @@ export async function runtimeFingerprint() {
   const paths = ['engine/src_worker_js.bundle.js', 'engine/vendors-heap.bundle.js',
     ...['exhaustive-optimizer','component-planner','engine-adapter','player-dto','classifier','equipment-presets',
       'ability-selection-rules','data-model','fixed-skill-options','result-retention','stored-audit','run-storage','statistics','app',
-      'staged-search','staged-audit','staged-statistics','learning-optimizer','ranking-review','result-status','competitive-search','learning-library','learning-model','learning-worker','sequential-confidence','optimizer'].map(n => `js/${n}.js`)];
+      'distinct-ranking','staged-diagnostics','staged-search','staged-audit','staged-statistics','learning-optimizer','ranking-review','result-status','competitive-search','learning-library','learning-model','learning-worker','sequential-confidence','optimizer'].map(n => `js/${n}.js`)];
   return fingerprint(await Promise.all(paths.map(async path => {
     const response = await fetch(path);
     if (!response.ok) throw new Error(`无法核对计算文件：${path}`);

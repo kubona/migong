@@ -1,3 +1,4 @@
+import {distinctRanking} from './distinct-ranking.js';
 import { finiteNumber, monsterLevelToFloorRange } from "./data-model.js";
 import { classifyMonster } from "./classifier.js";
 import {
@@ -469,8 +470,8 @@ async function runDirectionWorkflow(options) {
     options.onProgress?.({ phase: "optimize", direction: options.direction, completedPlans: optimizeCompletedPlans, totalPlans: orderedPlans.length, currentPlan: index + 1, level: optimizationLevel, phaseCompletedBatches: optimizeCompletedPlans, phaseTotalBatches: orderedPlans.length, phaseComplete: optimizeCompletedPlans === orderedPlans.length });
     return { plan, result, metrics: resultMetrics(result), monsterLevel: optimizationLevel, direction: options.direction };
   });
-  const winRateRanking = withRank([...optimized].sort(compareWinRate).slice(0, 3));
-  const speedRanking = withRank([...optimized].sort(compareSpeed).slice(0, 3));
+  const winRateRanking = withRank(distinctRanking(optimized,compareWinRate));
+  const speedRanking = withRank(distinctRanking(optimized,compareSpeed));
   return {
     direction: options.direction,
     profile: options.profile,

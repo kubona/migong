@@ -13,7 +13,7 @@ export function binomialLowerTail(wins, n, p) {
 }
 
 export function coarseRejected(wins, n, target) {
-  const threshold = Math.max(0, target - .02);
+  const threshold = Math.max(0, target - .05);
   // Strictly below the one-sided 95% exact upper limit, not a point estimate.
   return threshold > 0 && binomialLowerTail(wins, n, threshold) < .05;
 }
@@ -21,6 +21,11 @@ export function coarseRejected(wins, n, target) {
 export function stageStatus(result, target) {
   const wins = result.successes, n = result.trials;
   if (wins + 1e-9 >= target*n) return 'passed';
-  if (wins + 1e-9 >= Math.max(0, target-.01)*n) return 'tolerance';
+  if (wins + 1e-9 >= Math.max(0, target-.02)*n) return 'tolerance';
   return 'failed';
+}
+
+// Wider first-batch retest band; final tolerance is two percentage points below target.
+export function needsBoundaryRetest(result,target) {
+ return result.successes+1e-9>=Math.max(0,target-.05)*result.trials && result.successes+1e-9<target*result.trials;
 }

@@ -1,3 +1,4 @@
+import {retainDistinctRanking} from './distinct-ranking.js';
 import {buildSimulationInput} from './player-dto.js';
 import {batchSeed,normalizeEvidence} from './learning-library.js';
 import {mergeRoomResults} from './engine-adapter.js';
@@ -10,7 +11,7 @@ export async function reviewRankings(o,{store,lib,root,level,onProgress}){
  if(level===null)return{rankings,reviewed,trials};
  for await(const c of store.values(`${root}/candidate/`))if(c.levels[level]?.status==='certified')total++;
  const guard=async()=>{if(o.signal?.aborted)throw new DOMException('模拟已取消','AbortError');await o.pauseController?.waitIfPaused(o.signal);if(o.signal?.aborted)throw new DOMException('模拟已取消','AbortError');};
- const retain=(list,e,cmp)=>{list.push(e);list.sort(cmp);if(list.length>3)list.length=3;};
+ const retain=retainDistinctRanking;
  const run=async c=>{
    const key=store.key(`${root}/ranking/${level}/${trials}/${c.id}`);
    let row=await store.get(key)||{candidate:c.index,candidateId:c.id,level,plannedTrials:trials,result:null,pending:null};

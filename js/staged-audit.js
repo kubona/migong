@@ -9,7 +9,7 @@ export async function createStagedAudit(store, options = {}) {
     get recordCount() { return stats.overall.actualSimulationBatches; },
     summary(filter = {}) { return structuredClone(filter.monsterHrid ? stats.monsters[filter.monsterHrid] || empty() : stats.overall); },
     async simulate(engine, input, context) {
-      const key = store.key(`staged44-cache/${context.trialOffset}`);
+      const key = store.key(`staged45-cache/${context.trialOffset}`);
       const cached = await store.get(key);
       if (cached) return cached;
       const result = await engine.simulateRoom(input);
@@ -35,17 +35,22 @@ export async function createStagedAudit(store, options = {}) {
       return clean;
     },
     async exportTo(writable, extra = {}) {
-      await writable.write(JSON.stringify({reportType:'mwi_staged_audit_v044',schemaVersion:5,...extra,
-        retention:'汇总审计；已结算批次缓存和淘汰配装已清理，不含完整逐场回放',summary:recorder.summary()}).slice(0,-1)+',"searchStates":[');
+      await writable.write(JSON.stringify({reportType:'mwi_staged_audit_v045',schemaVersion:6,...extra,
+        retention:'汇总审计；已结算批次缓存已清理，保留淘汰候选的配装、分批及合并结果摘要，不含完整逐场回放',summary:recorder.summary()}).slice(0,-1)+',"searchStates":[');
       let comma='';
-      for await (const row of store.values('staged44/')) {
-        if (row.version !== 44 || !row.phase) continue;
+      for await (const row of store.values('staged45/')) {
+        if (row.version !== 45 || !row.phase) continue;
         const {window,pending,fallback,...summary}=row;
         await writable.write(comma+JSON.stringify(summary));comma=',';
       }
       await writable.write('],"rankingReviews":[');comma='';
-      for await (const row of store.values('staged44/')) {
+      for await (const row of store.values('staged45/')) {
         if (!row.rankingIndependent) continue;
+        await writable.write(comma+JSON.stringify(row));comma=',';
+      }
+      await writable.write('],"eliminatedCandidates":[');comma='';
+      for await (const row of store.values('staged45/')) {
+        if(row.recordType!=='eliminated-candidate')continue;
         await writable.write(comma+JSON.stringify(row));comma=',';
       }
       await writable.write(']}');
