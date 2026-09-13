@@ -1,3 +1,4 @@
+import {createCharacterEditor} from './character-editor.js';
 import {resultLevelLabel,resultSearchStatus} from './result-status.js';
 import {
   COMBAT_EQUIPMENT_TYPES,
@@ -55,6 +56,15 @@ const elements = Object.fromEntries([
   "target-rate", "parallel-count", "start-button", "pause-button", "cancel-button", "run-status", "audit-status", "run-time-status", "elapsed-time", "remaining-time", "progress-percent", "progress-track", "progress-bar", "results-section", "loadout-summary", "monster-tabs", "monster-detail", "export-button", "export-loadout-button", "export-audit-button",
 ].map((id) => [id, document.getElementById(id)]));
 const state = { character: null, catalog: null, results: [], activeMonster: 0, resultSelections: new Map(), engines: [], monsterProgress: new Map(), overallProgress: 0, abortController: null, pauseController: null, isPaused: false, lastRunStatus: "", startedAt: null, runStartedAtMilliseconds: 0, pausedAtMilliseconds: 0, pausedTotalMilliseconds: 0, timingInterval: null, auditRenderTimer: null, pendingAuditRecord: null, progressRenderTimer: null, pendingProgress: null, bridgeRevision: 0, fixedRules: structuredClone(DEFAULT_FIXED_ABILITY_RULES), auditRecorder: null, cpuWorkerCount: 0, resourceUtilization: 80 };
+
+const characterEditor=createCharacterEditor(document.getElementById('character-editor'),character=>{
+  state.character=character;
+  state.results=[];state.resultSelections=new Map();state.monsterProgress=new Map();
+  elements['results-section'].hidden=true;elements['candidate-preview'].innerHTML='';
+  elements['export-button'].disabled=true;elements['export-loadout-button'].disabled=true;
+  state.auditRecorder=null;elements['export-audit-button'].disabled=true;elements['audit-status'].hidden=true;
+  renderFixedSkillRules();updateReadyState();
+});
 
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
 function percent(value, digits = 1) { return `${(Number(value || 0) * 100).toFixed(digits)}%`; }
@@ -268,19 +278,19 @@ function updateReadyState() {
 }
 function acceptCharacter(raw, source = "手动文件") {
   if(state.busy || state.abortController)return;
-  state.character = sanitizeCharacterData(raw); elements["character-card"].classList.add("ready");
+  state.character = sanitizeCharacterData(raw); state.importedCharacter=structuredClone(state.character); characterEditor.load(state.character,state.catalog); document.getElementById("data-panel").open=true; elements["character-card"].classList.add("ready");
   const summary = summarizeCharacter(state.character); elements["character-status"].textContent = `已读取：${summary.itemStacks} 组物品、${summary.learnedAbilities} 个技能（${source}）`; renderFixedSkillRules(); updateReadyState();
 }
 function acceptCatalog(raw, source = "手动文件") {
   if(state.busy || state.abortController)return;
   const validation = validateClientData(raw); if (!validation.ok) throw new Error(validation.errors.join("；"));
-  state.catalog = raw; elements["client-card"].classList.add("ready"); elements["client-status"].textContent = `已读取：${raw.gameVersion || "未知版本"}，${Object.keys(raw.combatMonsterDetailMap).length} 个怪物（${source}）`; renderFixedSkillRules(); updateReadyState();
+  state.catalog = raw; characterEditor.catalog(raw); elements["client-card"].classList.add("ready"); elements["client-status"].textContent = `已读取：${raw.gameVersion || "未知版本"}，${Object.keys(raw.combatMonsterDetailMap).length} 个怪物（${source}）`; renderFixedSkillRules(); updateReadyState();
 }
-elements["character-file"].addEventListener("change", async (event) => { try { acceptCharacter(await readJsonFile(event.target.files[0], "角色数据")); } catch (error) { state.character = null; elements["character-status"].textContent = error.message; updateReadyState(); } });
+elements["character-file"].addEventListener("change", async (event) => { try { acceptCharacter(await readJsonFile(event.target.files[0], "角色数据")); } catch (error) { state.character = null; state.importedCharacter=null; characterEditor.hide(); elements["character-status"].textContent = error.message; updateReadyState(); } });
 elements["client-file"].addEventListener("change", async (event) => { try { acceptCatalog(await readJsonFile(event.target.files[0], "游戏数据")); } catch (error) { state.catalog = null; elements["client-status"].textContent = error.message; updateReadyState(); } });
 
 async function pollBridge() {
-  if(state.busy || state.abortController) return;
+  if(state.busy || state.abortController || characterEditor.hasEdits()) return;
   try {
     const response = await fetch(`/api/data?since=${state.bridgeRevision}`, { cache: "no-store" });
     if (!response.ok) throw new Error("本机桥接未启动");
@@ -399,6 +409,7 @@ async function runMonster(monsterHrid, index, options, engine, total) {
   } });
 }
 async function runAll(resume = false) {
+  characterEditor.apply();
   const searchMode = elements['search-mode'].value;
   state.searchMode = searchMode;
   const monsterHrids = selectedValues("monster-options"); if (!monsterHrids.length) { elements["run-status"].textContent = "至少选择一个怪物"; return; }
@@ -433,9 +444,10 @@ async function runAll(resume = false) {
       triggers: state.character.abilityCombatTriggersMap || {} });
   }
   const settings=captureSettings();
+  settings.characterSourceFingerprint=await fingerprint(state.importedCharacter);
   const runtime=await runtimeFingerprint();
   const identity=await fingerprint({character:state.character,catalog:state.catalog,settings,workerCount:cpuWorkerCount,runtime});
-  state.runMetadata={version:"0.45.0",runtimeFingerprint:runtime,settings,monotonicityAssumed:searchMode==="learning",targetRate:options.targetRate};
+  state.runMetadata={version:"0.46.0",runtimeFingerprint:runtime,settings,monotonicityAssumed:searchMode==="learning",targetRate:options.targetRate};
   const meta=await storage.begin(identity,settings,resume);
   const recorder=await (searchMode === 'learning' ? createStagedAudit : createStoredAudit)(storage,{resolveName:hrid=>chineseName(hrid,hrid),onRecord:scheduleAuditStatus});
   state.storage?.db.close(); state.storage=storage; options.runStorage=storage;
@@ -471,11 +483,14 @@ async function runAll(resume = false) {
 }
 const SETTING_IDS=['search-mode','min-monster-level','max-monster-level','target-rate','test-trials','review-trials','optimize-trials','ranking-trials','equipment-preset-source','resource-utilization','parallel-count'];
 function captureSettings() {
-  return {fields:Object.fromEntries(SETTING_IDS.map(id=>[id,elements[id].value])),
+  return {characterEditor:characterEditor.snapshot(),fields:Object.fromEntries(SETTING_IDS.map(id=>[id,elements[id].value])),
     monsters:selectedValues('monster-options'),equipment:selectedValues('equipment-options'),skills:selectedValues('skill-options'),
     directions:selectedMonsterDirections(),fixedRules:structuredClone(state.fixedRules)};
 }
-function restoreSettings(s) {
+async function restoreSettings(s) {
+  if(s.characterSourceFingerprint && await fingerprint(state.importedCharacter)!==s.characterSourceFingerprint)throw Error('请导入创建该断点时的原始角色文件，再恢复角色修改');
+  characterEditor.restore(s.characterEditor);
+
   for(const [id,value] of Object.entries(s.fields))if(elements[id])elements[id].value=value;
   updateSearchLabels();
   for(const [group,values] of [['monster-options',s.monsters],['equipment-options',s.equipment],['skill-options',s.skills]])
@@ -514,13 +529,13 @@ elements['export-learning'].addEventListener('click', () => guarded(async () => 
   const store = await RunStorage.open();
   try {
     if (window.showSaveFilePicker) {
-      const handle = await window.showSaveFilePicker({ suggestedName: 'mwi-learning-v045.jsonl', types: [{ description: '历史学习档案', accept: { 'application/json': ['.jsonl'] } }] });
+      const handle = await window.showSaveFilePicker({ suggestedName: 'mwi-learning-v046.jsonl', types: [{ description: '历史学习档案', accept: { 'application/json': ['.jsonl'] } }] });
       const writable = await handle.createWritable();
       try { await exportLearning(store, writable); await writable.close(); } catch (e) { await writable.abort(); throw e; }
     } else {
       const chunks = []; let buffer = '';
       await exportLearning(store, { async write(p) { buffer += p; if (buffer.length > 262144) { chunks.push(new Blob([buffer])); buffer = ''; } } });
-      chunks.push(new Blob([buffer])); downloadBlob(new Blob(chunks, {type:'application/json'}), 'mwi-learning-v045.jsonl');
+      chunks.push(new Blob([buffer])); downloadBlob(new Blob(chunks, {type:'application/json'}), 'mwi-learning-v046.jsonl');
     }
     elements['learning-status'].textContent = '历史学习档案已导出';
   } finally { store.db.close(); }
@@ -540,9 +555,10 @@ elements['start-button'].addEventListener('click',()=>guarded(()=>runAll(false))
 elements['resume-button'].addEventListener('click',()=>guarded(async()=>{
   const store=await RunStorage.open();const saved=await store.get('latest');store.db.close();
   if(!saved)throw new Error('没有可恢复的任务');
-  restoreSettings(saved.settings);await runAll(true);
+  await restoreSettings(saved.settings);await runAll(true);
 }));
 elements['preview-button'].addEventListener('click',()=>guarded(async()=>{
+  characterEditor.apply();
   const monsters=selectedValues('monster-options');
   if(!monsters.length)throw new Error('至少选择一个怪物');
   elements['candidate-panel'].hidden=false;elements['candidate-panel'].open=true;elements['candidate-preview'].innerHTML='';
@@ -580,9 +596,9 @@ elements["pause-button"].addEventListener("click", () => {
 elements["cancel-button"].addEventListener("click", () => { state.abortController?.abort(); state.engines.forEach((engine) => engine.terminate()); });
 elements["export-button"].addEventListener("click", () => {
   const skillValues = selectedValues("skill-options");
-  const payload = { searchMode: state.searchMode, reportType: "mwi_labyrinth_exhaustive_search_v045", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: state.searchMode !== "learning", uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: state.searchMode !== "learning", reviewTolerance: 0.01, safeDynamicRetention: state.searchMode !== "learning", finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
+  const payload = { searchMode: state.searchMode, reportType: "mwi_labyrinth_exhaustive_search_v046", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: state.searchMode !== "learning", uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: state.searchMode !== "learning", reviewTolerance: 0.01, safeDynamicRetention: state.searchMode !== "learning", finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
   if (state.searchMode === 'learning') {
-    payload.reportType = 'mwi_labyrinth_learning_search_v045';
+    payload.reportType = 'mwi_labyrinth_learning_search_v046';
     delete payload.searchPolicy.reviewTolerance;
     delete payload.searchPolicy.finalists;
     payload.searchPolicy.globalOptimalityProven = false;
@@ -602,7 +618,7 @@ elements["export-button"].addEventListener("click", () => {
     payload.phaseTrials = { coarse: Number(elements['test-trials'].value), perLevelAndBoundary: Number(elements['review-trials'].value), independentRecordConfirmation: Number(elements['optimize-trials'].value), finalOrderRanking: Number(elements['ranking-trials'].value) };
   }
   payload.runtime = state.runMetadata;
-  downloadJson(payload, `mwi迷宫模拟报告-v045-${new Date().toISOString().slice(0, 10)}.json`);
+  downloadJson(payload, `mwi迷宫模拟报告-v046-${new Date().toISOString().slice(0, 10)}.json`);
 });
 elements['export-audit-button'].addEventListener('click',async()=>{
   if(!state.auditRecorder?.recordCount)return;
@@ -610,10 +626,10 @@ elements['export-audit-button'].addEventListener('click',async()=>{
   try{
     const extra={gameVersion:state.catalog.gameVersion,startedAt:state.startedAt,...state.runMetadata};
     if(window.showSaveFilePicker && state.auditRecorder.exportTo){
-      const handle=await window.showSaveFilePicker({suggestedName:'mwi模拟审计日志-v045.json',types:[{description:'JSON',accept:{'application/json':['.json']}}]});
+      const handle=await window.showSaveFilePicker({suggestedName:'mwi模拟审计日志-v046.json',types:[{description:'JSON',accept:{'application/json':['.json']}}]});
       const writable=await handle.createWritable();
       try{await state.auditRecorder.exportTo(writable,extra);await writable.close();}catch(e){await writable.abort();throw e;}
-    }else downloadBlob(await state.auditRecorder.exportBlob(extra),'mwi模拟审计日志-v045.json');
+    }else downloadBlob(await state.auditRecorder.exportBlob(extra),'mwi模拟审计日志-v046.json');
   }catch(e){if(e.name!=='AbortError')elements['run-status'].textContent='导出失败：'+e.message;}
   finally{elements['export-audit-button'].disabled=false;}
 });

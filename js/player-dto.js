@@ -132,6 +132,7 @@ function buildBaseSimulationInput(character, catalog, equipmentCandidate, abilit
       character.buffs?.mooPass || [],
       character.buffs?.community || [],
       character.buffs?.guild || [],
+      character.buffs?.custom || [],
     ]),
     labyrinthCombatBuffs: buildLabyrinthCombatBuffs(character.characterInfo),
     mazeCrateItemHrids: [...new Set(crates)],

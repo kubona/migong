@@ -230,7 +230,7 @@ export function presetRotationPool(character, catalog, baseline, selectedTypes) 
   for (const type of selectedTypes) {
     const original = baseline.equipment[type];
     const family = ROTATION_EQUIPMENT[type];
-    const alternative = family ? strongestOwnedFamily(character, catalog, type, family) : null;
+    const alternative = family && familyHrid(original?.hrid) !== family ? strongestOwnedFamily(character, catalog, type, family) : null;
     const usable = alternative && (catalog.itemDetailMap[alternative.hrid].equipmentDetail.levelRequirements || [])
       .every(r => (levels.get(r.skillHrid) || 1) >= r.level);
     const unique = new Map();
@@ -245,13 +245,30 @@ export function presetRotationPool(character, catalog, baseline, selectedTypes) 
 function systemBaseline(character, catalog, key) {
   const preset = SYSTEM_EQUIPMENT_PRESETS[key];
   const equipment = {};
+  const overrides = character.equipmentOverrides || {};
   for (const [type, configuredFamily] of Object.entries(preset)) {
     if (type === CHARM) continue;
+    if (overrides[type] || (overrides[TWO_HAND] && [MAIN_HAND,OFF_HAND].includes(type)) || (overrides[MAIN_HAND] && type === TWO_HAND)) continue;
     const entry = strongestOwnedFamily(character, catalog, type, configuredFamily);
     if (!entry) throw new Error(`系统预设“${key}”缺少已拥有装备：${configuredFamily}`);
     equipment[type] = entry;
   }
-  return { sourcePreset: `系统预设·${PRESET_LABELS[key] || key}`, sourcePresetId: `system:${key}`, equipment };
+  return { sourcePreset: `系统预设·${PRESET_LABELS[key] || key}`, sourcePresetId: `system:${key}`, equipment: applyEquipmentOverrides(equipment,character,catalog) };
+}
+
+export function applyEquipmentOverrides(equipment,character,catalog) {
+  const result={...equipment},overrides=character.equipmentOverrides||{};
+  if(!Object.keys(overrides).length)return result;
+  if(overrides[TWO_HAND]){delete result[MAIN_HAND];delete result[OFF_HAND];}
+  if(overrides[MAIN_HAND])delete result[TWO_HAND];
+  if(result[TWO_HAND]&&overrides[OFF_HAND]&&!overrides[MAIN_HAND])throw Error('双手预设不能仅覆盖副手；请同时指定主手或取消副手覆盖');
+  for(const[type,override]of Object.entries(overrides)){
+    const item=catalog.itemDetailMap[override.hrid];
+    if(!item||item.equipmentDetail?.type!==type||type===CHARM)throw Error('无效的基准装备覆盖');
+    result[type]=equipmentEntry({itemHrid:override.hrid,enhancementLevel:override.enhancementLevel,count:1},item,catalog);
+  }
+  if(result[MAIN_HAND]&&!result[OFF_HAND])throw Error('单手基准武器需要副手装备，请在角色详细数据中指定副手');
+  return result;
 }
 
 function parseItemReference(reference) {
@@ -319,7 +336,7 @@ function personalBaselines(character, catalog, direction, monsterHrid) {
     unique.set(key, {
       sourcePreset: String(loadout.name || `个人预设 ${loadout.id ?? id}`),
       sourcePresetId: String(loadout.id ?? id),
-      equipment,
+      equipment: applyEquipmentOverrides(equipment,character,catalog),
     });
   }
   if (!unique.size) throw new Error("characterdata 中没有与当前弱点方向匹配的个人战斗预设");

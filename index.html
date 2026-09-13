@@ -27,6 +27,7 @@
           <label class="file-card" id="client-card"><span class="file-card__title">游戏数据</span><span class="file-card__hint">init_client_data_v*.json</span><input id="client-file" type="file" accept="application/json,.json"><span class="file-card__status" id="client-status">尚未读取</span></label>
         </div>
         <div id="data-summary" class="data-summary" hidden></div>
+        <details id="character-editor" class="subsection" hidden></details>
       </div>
     </details>
 
@@ -92,7 +93,7 @@
     </div></details>
     <details id="help-panel" class="panel collapsible-panel utility-panel"><summary class="section-heading"><strong>说明</strong><span class="collapse-label"></span></summary><div class="panel-content help-content">
       <h3>版本与战斗规则</h3>
-      <p>v0.45：预设装备缩量、首套二分、阶段筛选与技能顺序排名。战斗引擎和怪物等级成长不变。怪物首次技能冷却继续按计算器1.5.13设为急速修正后冷却的固定50%，尚未经游戏官方验证。</p>
+      <p>v0.46：导入后可编辑角色战斗数据，保留045榜单、筛选和淘汰诊断优化。战斗引擎和怪物等级成长不变。怪物首次技能冷却继续按计算器1.5.13设为急速修正后冷却的固定50%，尚未经游戏官方验证。</p>
       <h3>组合与学习</h3>
       <p>登记全部合法装备、特殊技能、主动技能及顺序，去重后分页保存。魔法0CD始终第四位。不再截取512套、不再限制每怪2000批、不再只选四套验证。</p>
       <p>无历史时按组件与搭配覆盖安排先后；有正常模拟结果后在线训练小型树模型。模型仅建议先测谁，每四个调度位置至少一个留给完整覆盖。128套是不断补充的内存调度窗口，不是搜索范围上限。模型近期预测误差不优于中性基线时，暂退回覆盖调度。</p>
