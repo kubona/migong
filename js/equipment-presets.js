@@ -217,6 +217,7 @@ export function strongestOwnedFamily(character, catalog, type, configuredFamily)
 }
 
 export const ROTATION_EQUIPMENT = Object.freeze({
+  '/equipment_types/off_hand': '/items/knights_aegis',
   '/equipment_types/head': '/items/corsair_helmet',
   '/equipment_types/body': '/items/anchorbound_plate_body',
   '/equipment_types/legs': '/items/anchorbound_plate_legs',
