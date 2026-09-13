@@ -327,3 +327,5 @@ button:focus-visible, summary:focus-visible, .file-action:focus-within { outline
 #character-editor label { font-size:13px;color:var(--ink-soft); }
 #character-edit-status { font-size:13px; }
 @media(max-width:600px){.character-edit-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.editor-trigger{display:grid;grid-template-columns:1fr 1fr}.editor-trigger label:first-child{min-width:0;}}
+
+.editor-achievement{padding:14px 0;border-bottom:1px solid var(--line)}.editor-achievement strong{color:var(--gold)}.editor-achievement p{margin:6px 0;color:var(--ink-soft)}.editor-achievement input{max-width:140px}

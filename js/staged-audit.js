@@ -35,7 +35,7 @@ export async function createStagedAudit(store, options = {}) {
       return clean;
     },
     async exportTo(writable, extra = {}) {
-      await writable.write(JSON.stringify({reportType:'mwi_staged_audit_v047',schemaVersion:6,...extra,
+      await writable.write(JSON.stringify({reportType:'mwi_staged_audit_v048',schemaVersion:6,...extra,
         retention:'汇总审计；已结算批次缓存已清理，保留淘汰候选的配装、分批及合并结果摘要，不含完整逐场回放',summary:recorder.summary()}).slice(0,-1)+',"searchStates":[');
       let comma='';
       for await (const row of store.values('staged45/')) {
