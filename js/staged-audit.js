@@ -6,11 +6,12 @@ export async function createStagedAudit(store, options = {}) {
   let stats = await store.get(store.key('audit-summary')) || {overall:empty(),monsters:{}};
   const labels = {bootstrap:'初始二分',screen:'粗筛',step:'逐级测试',boundary:'临界补样',confirm:'纪录确认',ranking:'顺序排名'};
   const recorder = {
+    persistsCompletedBatches:true,
     get recordCount() { return stats.overall.actualSimulationBatches; },
     summary(filter = {}) { return structuredClone(filter.monsterHrid ? stats.monsters[filter.monsterHrid] || empty() : stats.overall); },
     async simulate(engine, input, context) {
       const key = store.key(`staged45-cache/${context.trialOffset}`);
-      const cached = await store.get(key);
+      const cached = context.cacheChecked ? null : await store.get(key);
       if (cached) return cached;
       const result = await engine.simulateRoom(input);
       if (result.trials !== input.trials || result.successes + result.failedByDeath + result.failedByTimeout !== result.trials) throw Error('战斗场次不完整');
@@ -35,7 +36,7 @@ export async function createStagedAudit(store, options = {}) {
       return clean;
     },
     async exportTo(writable, extra = {}) {
-      await writable.write(JSON.stringify({reportType:'mwi_staged_audit_v049',schemaVersion:6,...extra,
+      await writable.write(JSON.stringify({reportType:'mwi_staged_audit_v050',schemaVersion:6,...extra,
         retention:'汇总审计；已结算批次缓存已清理，保留淘汰候选的配装、分批及合并结果摘要，不含完整逐场回放',summary:recorder.summary()}).slice(0,-1)+',"searchStates":[');
       let comma='';
       for await (const row of store.values('staged45/')) {

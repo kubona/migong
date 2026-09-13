@@ -448,7 +448,7 @@ async function runAll(resume = false) {
   settings.characterSourceFingerprint=await fingerprint(state.importedCharacter);
   const runtime=await runtimeFingerprint();
   const identity=await fingerprint({character:state.character,catalog:state.catalog,settings,workerCount:cpuWorkerCount,runtime});
-  state.runMetadata={version:"0.49.0",runtimeFingerprint:runtime,settings,monotonicityAssumed:searchMode==="learning",targetRate:options.targetRate};
+  state.runMetadata={version:"0.50.0",runtimeFingerprint:runtime,settings,monotonicityAssumed:searchMode==="learning",targetRate:options.targetRate};
   const meta=await storage.begin(identity,settings,resume);
   const recorder=await (searchMode === 'learning' ? createStagedAudit : createStoredAudit)(storage,{resolveName:hrid=>chineseName(hrid,hrid),onRecord:scheduleAuditStatus});
   state.storage?.db.close(); state.storage=storage; options.runStorage=storage;
@@ -530,13 +530,13 @@ elements['export-learning'].addEventListener('click', () => guarded(async () => 
   const store = await RunStorage.open();
   try {
     if (window.showSaveFilePicker) {
-      const handle = await window.showSaveFilePicker({ suggestedName: 'mwi-learning-v049.jsonl', types: [{ description: '历史学习档案', accept: { 'application/json': ['.jsonl'] } }] });
+      const handle = await window.showSaveFilePicker({ suggestedName: 'mwi-learning-v050.jsonl', types: [{ description: '历史学习档案', accept: { 'application/json': ['.jsonl'] } }] });
       const writable = await handle.createWritable();
       try { await exportLearning(store, writable); await writable.close(); } catch (e) { await writable.abort(); throw e; }
     } else {
       const chunks = []; let buffer = '';
       await exportLearning(store, { async write(p) { buffer += p; if (buffer.length > 262144) { chunks.push(new Blob([buffer])); buffer = ''; } } });
-      chunks.push(new Blob([buffer])); downloadBlob(new Blob(chunks, {type:'application/json'}), 'mwi-learning-v049.jsonl');
+      chunks.push(new Blob([buffer])); downloadBlob(new Blob(chunks, {type:'application/json'}), 'mwi-learning-v050.jsonl');
     }
     elements['learning-status'].textContent = '历史学习档案已导出';
   } finally { store.db.close(); }
@@ -597,9 +597,9 @@ elements["pause-button"].addEventListener("click", () => {
 elements["cancel-button"].addEventListener("click", () => { state.abortController?.abort(); state.engines.forEach((engine) => engine.terminate()); });
 elements["export-button"].addEventListener("click", () => {
   const skillValues = selectedValues("skill-options");
-  const payload = { searchMode: state.searchMode, reportType: "mwi_labyrinth_exhaustive_search_v049", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: state.searchMode !== "learning", uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: state.searchMode !== "learning", reviewTolerance: 0.01, safeDynamicRetention: state.searchMode !== "learning", finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
+  const payload = { searchMode: state.searchMode, reportType: "mwi_labyrinth_exhaustive_search_v050", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: state.searchMode !== "learning", uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: state.searchMode !== "learning", reviewTolerance: 0.01, safeDynamicRetention: state.searchMode !== "learning", finalists: 5, leaderboards: ["winRate", "averageSuccessfulBattleSeconds"] }, results: state.results };
   if (state.searchMode === 'learning') {
-    payload.reportType = 'mwi_labyrinth_learning_search_v049';
+    payload.reportType = 'mwi_labyrinth_learning_search_v050';
     delete payload.searchPolicy.reviewTolerance;
     delete payload.searchPolicy.finalists;
     payload.searchPolicy.globalOptimalityProven = false;
@@ -619,7 +619,7 @@ elements["export-button"].addEventListener("click", () => {
     payload.phaseTrials = { coarse: Number(elements['test-trials'].value), perLevelAndBoundary: Number(elements['review-trials'].value), independentRecordConfirmation: Number(elements['optimize-trials'].value), finalOrderRanking: Number(elements['ranking-trials'].value) };
   }
   payload.runtime = state.runMetadata;
-  downloadJson(payload, `mwi迷宫模拟报告-v049-${new Date().toISOString().slice(0, 10)}.json`);
+  downloadJson(payload, `mwi迷宫模拟报告-v050-${new Date().toISOString().slice(0, 10)}.json`);
 });
 elements['export-audit-button'].addEventListener('click',async()=>{
   if(!state.auditRecorder?.recordCount)return;
@@ -627,10 +627,10 @@ elements['export-audit-button'].addEventListener('click',async()=>{
   try{
     const extra={gameVersion:state.catalog.gameVersion,startedAt:state.startedAt,...state.runMetadata};
     if(window.showSaveFilePicker && state.auditRecorder.exportTo){
-      const handle=await window.showSaveFilePicker({suggestedName:'mwi模拟审计日志-v049.json',types:[{description:'JSON',accept:{'application/json':['.json']}}]});
+      const handle=await window.showSaveFilePicker({suggestedName:'mwi模拟审计日志-v050.json',types:[{description:'JSON',accept:{'application/json':['.json']}}]});
       const writable=await handle.createWritable();
       try{await state.auditRecorder.exportTo(writable,extra);await writable.close();}catch(e){await writable.abort();throw e;}
-    }else downloadBlob(await state.auditRecorder.exportBlob(extra),'mwi模拟审计日志-v049.json');
+    }else downloadBlob(await state.auditRecorder.exportBlob(extra),'mwi模拟审计日志-v050.json');
   }catch(e){if(e.name!=='AbortError')elements['run-status'].textContent='导出失败：'+e.message;}
   finally{elements['export-audit-button'].disabled=false;}
 });

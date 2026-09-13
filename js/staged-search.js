@@ -93,6 +93,7 @@ export async function searchStagedCandidates(o) {
   };
   const keep=c=>s.bestLevel!==null&&['passed','tolerance'].includes(c.levels[s.bestLevel]?.status);
   async function compactFinished() {
+    if(!window.some(c=>c.phase==='done'))return;
     const deletes=[],writes=[];
     for(const c of window.filter(c=>c.phase==='done')) {
       // The first binary candidate may remain a finalist while later candidates run.
@@ -119,11 +120,11 @@ export async function searchStagedCandidates(o) {
       let r=await store.get(cache(task.offset));
       if(!r) {
         const input={...buildSimulationInput(o.character,o.catalog,c.plan.equipmentCandidate,c.plan.abilityOrder),
-          monsterHrid:o.monsterHrid,roomLevel:task.level,roomDurationSeconds:120,trials:task.trials,seed:batchSeed(task.offset),plannedConcurrency:o.engine.workerCount||1};
-        const context={stage:task.stage,trialOffset:task.offset,planId:c.id,candidateIndex:c.index,firstVisit:c.visits===0,bestLevelAtDispatch:task.best};
+          monsterHrid:o.monsterHrid,roomLevel:task.level,roomDurationSeconds:120,trials:task.trials,seed:batchSeed(task.offset),plannedConcurrency:tasks.length};
+        const context={stage:task.stage,trialOffset:task.offset,planId:c.id,candidateIndex:c.index,firstVisit:c.visits===0,bestLevelAtDispatch:task.best,cacheChecked:true};
         r=clean(o.auditRecorder?await o.auditRecorder.simulate(o.engine,input,context):await o.engine.simulateRoom(input));
         if(r.trials!==task.trials||r.successes+r.failedByDeath+r.failedByTimeout!==r.trials)throw Error('战斗场次不完整');
-        await store.put(cache(task.offset),r);
+        if(!o.auditRecorder?.persistsCompletedBatches)await store.put(cache(task.offset),r);
       }
       return {task,c,r};
     }));
@@ -209,11 +210,11 @@ export async function searchStagedCandidates(o) {
           let batch=await store.get(cache(task.offset));
           if(!batch) {
             const input={...buildSimulationInput(o.character,o.catalog,plan.equipmentCandidate,plan.abilityOrder),monsterHrid:o.monsterHrid,
-              roomLevel:s.bestLevel,roomDurationSeconds:120,trials:task.trials,seed:batchSeed(task.offset),plannedConcurrency:o.engine.workerCount||1};
+              roomLevel:s.bestLevel,roomDurationSeconds:120,trials:task.trials,seed:batchSeed(task.offset),plannedConcurrency:1};
             batch=clean(o.auditRecorder?await o.auditRecorder.simulate(o.engine,input,{stage:'ranking',trialOffset:task.offset,
-              candidateIndex:c.index,planId:plan.key,firstVisit:!row.result}):await o.engine.simulateRoom(input));
+              candidateIndex:c.index,planId:plan.key,firstVisit:!row.result,cacheChecked:true}):await o.engine.simulateRoom(input));
             if(batch.trials!==task.trials||batch.successes+batch.failedByDeath+batch.failedByTimeout!==batch.trials)throw Error('排名场次不完整');
-            await store.put(cache(task.offset),batch);
+            if(!o.auditRecorder?.persistsCompletedBatches)await store.put(cache(task.offset),batch);
           }
           row.result=clean(row.result?mergeRoomResults([row.result,batch]):batch);row.pending=null;
           row.status=stageStatus(row.result,target);row.interval=wilsonInterval(row.result.successes,row.result.trials);
