@@ -83,4 +83,3 @@ export async function previewMonster(options) {
     usedAuras:[...usedAuras.values()],usedActives:[...usedActives.values()],
     usedEquipment:Object.fromEntries(Object.entries(usedEquipment).map(([slot,entries])=>[slot,[...entries.values()]]))};
 }
-
