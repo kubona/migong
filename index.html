@@ -1,109 +1,14 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>银河奶牛放置迷宫配装模拟器</title>
-  <link rel="stylesheet" href="./styles.css">
-  <script src="./js/theme.js"></script>
-</head>
-<body>
-  <header class="hero">
-    <div class="hero__inner">
-      <h1>迷宫配装模拟器</h1>
-      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换为明亮主题" title="切换为明亮主题"><span aria-hidden="true">☀</span><span>明亮</span></button>
-    </div>
-  </header>
-
-  <main class="shell">
-    <details id="data-panel" class="panel collapsible-panel import-panel" open>
-      <summary class="section-heading"><span class="step">1</span><strong id="import-title">加载数据</strong><span class="collapse-label"></span></summary>
-      <div class="panel-content">
-        <div id="bridge-status" class="bridge-status">正在等待数据桥接…</div>
-        <div class="file-grid">
-          <label class="file-card" id="character-card"><span class="file-card__title">角色数据</span><span class="file-card__hint">init_character_data.json</span><input id="character-file" type="file" accept="application/json,.json"><span class="file-card__status" id="character-status">尚未读取</span></label>
-          <label class="file-card" id="client-card"><span class="file-card__title">游戏数据</span><span class="file-card__hint">init_client_data_v*.json</span><input id="client-file" type="file" accept="application/json,.json"><span class="file-card__status" id="client-status">尚未读取</span></label>
-        </div>
-        <div id="data-summary" class="data-summary" hidden></div>
-        <details id="character-editor" class="subsection" hidden></details>
-      </div>
-    </details>
-
-    <details id="scope-panel" class="panel collapsible-panel" open>
-      <summary class="section-heading"><span class="step">2</span><strong id="targets-title">模拟范围</strong><span class="collapse-label"></span></summary>
-      <div class="panel-content subsection-stack">
-        <details id="monster-scope" class="subsection" open><summary>迷宫怪物</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="monsters">全选</button><button type="button" class="text-button" data-clear-all="monsters">清空</button></div><div id="monster-options" class="choice-grid monster-choice-grid"></div></div></details>
-        <details id="equipment-scope" class="subsection"><summary>装备部位</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="equipment">全选</button><button type="button" class="text-button" data-clear-all="equipment">清空</button></div><div id="equipment-options" class="choice-grid equipment-choice-grid"></div></div></details>
-        <details id="skill-scope" class="subsection"><summary>技能类别</summary><div class="subsection-content"><div class="choice-toolbar"><button type="button" class="text-button" data-select-all="skills">全选</button><button type="button" class="text-button" data-clear-all="skills">清空</button></div><div id="skill-options" class="choice-grid skill-choice-grid"></div></div></details>
-        <details id="fixed-rules-panel" class="subsection"><summary>固定技能</summary><div class="subsection-content"><p id="fixed-rules-status" class="compact-note"></p><div id="fixed-skill-rules"></div></div></details>
-      </div>
-    </details>
-
-    <details id="settings-panel" class="panel collapsible-panel" open>
-      <summary class="section-heading"><span class="step">3</span><strong id="settings-title">模拟设置</strong><span class="collapse-label"></span></summary>
-      <div class="panel-content">
-        <div class="settings-group"><h3>搜索配置</h3><div class="settings-grid settings-grid--three">
-          <label>搜索方式<select id="search-mode"><option value="learning" selected>缩量阶段搜索</option><option value="exhaustive">传统全量搜索</option></select></label>
-          <label>预设配装<select id="equipment-preset-source"><option value="system" selected>系统预设配装</option><option value="personal">个人预设配装</option></select></label>
-        </div></div>
-        <div class="settings-group"><h3>目标等级</h3><div class="settings-grid settings-grid--three">
-          <label>等级下限<input id="min-monster-level" type="number" min="1" max="5000" value="200"></label>
-          <label>等级上限<input id="max-monster-level" type="number" min="1" max="5000" value="300"></label>
-          <label>目标胜率<input id="target-rate" type="number" min="1" max="99" value="70"><span class="suffix">%</span></label>
-        </div></div>
-        <div class="settings-group"><h3>计算资源</h3><div class="settings-grid settings-grid--two">
-          <label>资源占用<select id="resource-utilization"><option value="50">50%</option><option value="80" selected>80%</option><option value="100">100%</option></select></label>
-          <label>并行怪物数<select id="parallel-count"></select></label>
-        </div></div>
-        <div class="settings-group"><h3>模拟次数</h3><div class="settings-grid settings-grid--three">
-          <label><span id="test-trials-label">粗筛场数</span><input id="test-trials" type="number" min="10" max="10000" step="10" value="100"></label>
-          <label><span id="review-trials-label">每等级场数／临界追加</span><input id="review-trials" type="number" min="10" max="10000" step="10" value="1000"></label>
-          <label><span id="optimize-trials-label">独立纪录确认场数</span><input id="optimize-trials" type="number" min="10" max="100000" step="10" value="1000"></label>
-          <label>每种技能顺序排名场数<input id="ranking-trials" type="number" min="10" max="100000" step="10" value="5000"></label>
-        </div></div>
-      </div>
-    </details>
-
-    <section class="panel run-panel" aria-label="开始模拟">
-      <div class="section-heading run-heading"><span class="step">4</span><h2>模拟运行</h2></div>
-      <div class="run-actions">
-      <button id="start-button" class="primary-button" disabled>开始阶段搜索</button>
-      <button id="preview-button" class="secondary-button" disabled>预览候选</button>
-      <button id="resume-button" class="secondary-button" disabled>恢复上次任务</button>
-      <button id="pause-button" class="secondary-button" hidden>暂停</button>
-      <button id="cancel-button" class="secondary-button" hidden>停止</button>
-      </div>
-      <div class="run-status" id="run-status" role="status">请先加载两份数据</div>
-      <div class="run-note" id="audit-status" hidden></div>
-      <div class="run-note" id="checkpoint-status"></div>
-      <div class="run-time-status" id="run-time-status" hidden><span>流程进度 <strong id="progress-percent">0.0%</strong></span><span>运行时间 <strong id="elapsed-time">0秒</strong></span><span>预估剩余时间 <strong id="remaining-time">计算中</strong></span></div>
-      <div class="progress-track" id="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div id="progress-bar"></div></div>
-      <details class="subsection performance-panel"><summary>计算状态</summary><div id="performance-status" class="subsection-content">尚未运行</div></details>
-    </section>
-
-    <details id="candidate-panel" class="panel collapsible-panel utility-panel" hidden><summary class="section-heading"><strong>候选清单</strong><span class="collapse-label"></span></summary><div id="candidate-preview" class="panel-content"></div></details>
-    <details id="learning-panel" class="panel collapsible-panel utility-panel"><summary class="section-heading"><strong>学习档案</strong><span class="collapse-label"></span></summary><div class="panel-content">
-      <div class="archive-actions">
-      <button id="export-learning" class="secondary-button">导出学习档案</button>
-      <label class="secondary-button file-action">导入学习档案<input id="import-learning" type="file" accept=".jsonl" aria-label="导入学习档案"></label>
-      </div>
-      <div id="learning-status" class="compact-note archive-status" role="status">本机自动保存</div>
-    </div></details>
-    <details id="help-panel" class="panel collapsible-panel utility-panel"><summary class="section-heading"><strong>说明</strong><span class="collapse-label"></span></summary><div class="panel-content help-content">
-      <p>版本：0.51</p>
-      <p>先导入角色和游戏数据，选择模拟范围后开始搜索。角色修改会在预览或开始模拟时自动应用。</p>
-      <p>首套组合二分确定初始等级，后续组合逐级挑战。最终在同一等级复核技能顺序，胜率达到目标后，按平均耗时排名。胜利计实际耗时，失败计120秒。</p>
-      <p>任务保存在当前浏览器。恢复任务需要原始数据；版本更新后需重新开始。</p>
-      <div class="storage-actions"><button id="clear-saved-button" class="secondary-button" type="button">清除任务与学习档案</button></div>
-    </div></details>
-    <section id="results-section" class="results" hidden aria-labelledby="results-title">
-      <div class="results-heading"><h2 id="results-title">配装结果</h2><div class="results-actions"><button id="export-audit-button" class="secondary-button" disabled>下载模拟明细</button><button id="export-loadout-button" class="secondary-button">导出配装总表</button><button id="export-button" class="secondary-button">导出完整报告</button></div></div>
-      <details id="summary-report" class="report-block" open><summary>全部怪物配装总表</summary><div id="loadout-summary" class="loadout-summary"></div></details>
-      <details id="detail-report" class="report-block" open><summary>单怪物详细报告</summary><div class="report-block-content"><div id="monster-tabs" class="monster-tabs" role="tablist"></div><article id="monster-detail" class="panel result-detail"></article></div></details>
-    </section>
-  </main>
-  <script type="module" src="./js/app.js"></script>
-</body>
-</html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'"><title>迷宫模拟器</title><link rel="stylesheet" href="styles.css"><script src="js/theme.js"></script></head>
+<body><main>
+<header><h1>迷宫模拟器</h1><button id="theme-toggle" type="button">主题</button></header>
+<section id="configuration">
+<section class="panel"><div class="imports"><label class="file">导入角色<input id="character-file" type="file" accept=".json"><span id="character-status">未导入</span></label><label class="file">导入游戏数据<input id="client-file" type="file" accept=".json"><span id="client-status">未导入</span></label></div><p id="data-status" role="status"></p><details id="character-editor" hidden></details></section>
+<details class="panel" id="scope-panel"><summary>模拟范围<span id="scope-summary"></span></summary><div class="content"><div class="toolbar"><button data-all="true">全选</button><button data-all="false">清空</button></div><div id="monster-options" class="monsters"></div><h3>轮换部位</h3><div id="equipment-options" class="choices"></div><h3>技能</h3><div class="choices"><label><input id="aura" type="checkbox" checked>特殊技能</label><label><input id="active" type="checkbox" checked>主动技能</label></div><label>预设<select id="preset"><option value="system">系统预设</option><option value="personal">个人预设</option></select></label><details><summary>固定技能</summary><div id="fixed-rules" class="content"></div></details></div></details>
+<details class="panel" id="settings-panel"><summary>模拟设置<span>最多尝试两次</span></summary><div class="content grid"><label>最低等级<input id="minimum" type="number" min="20" max="5000" value="200"></label><label>最高等级<input id="maximum" type="number" min="20" max="5000" value="300"></label><label>单场目标胜率 %<input id="target" type="number" min="1" max="99" value="70"></label><label>资源占用<select id="resource"><option value="50">50%</option><option value="80" selected>80%</option><option value="100">100%</option></select></label><label>粗筛场数<input id="screen-trials" type="number" min="10" max="10000" step="10" value="100"></label><label>等级测试场数<input id="level-trials" type="number" min="10" max="10000" step="10" value="1000"></label><label>最终复核场数<input id="final-trials" type="number" min="10" max="100000" step="10" value="5000"></label></div></details>
+</section>
+<section class="panel run"><div class="toolbar"><button class="primary" id="start" disabled>开始模拟</button><button id="resume" disabled>恢复任务</button><button id="preview" disabled>预览候选</button><button id="pause" hidden>暂停</button><button id="stop" hidden>停止</button></div><p id="run-status" role="status">请导入数据</p><progress id="progress" max="1" value="0" hidden></progress><small id="run-time"></small></section>
+<section id="preview-panel" class="panel" hidden></section>
+<section id="results" class="panel" hidden><div class="toolbar"><h2>达标方案</h2><button id="export">导出结果</button><button id="audit">导出明细</button></div><div id="result-tabs" class="toolbar"></div><div id="result-body"></div></section>
+<footer><details><summary>说明</summary><p>每种怪物独立搜索，在楼层边界和共同等级比较高度与速度。房间最多尝试两次，每次失败按120秒计时。通过概率为独立重试估计，有限样本不能保证最优。</p><p>建议等级用于设置游戏挑战阈值。更新版本后需开始新任务。</p><button id="clear">清除本机任务</button></details><span>052</span></footer>
+</main><script type="module" src="js/app.js"></script></body></html>

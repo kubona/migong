@@ -8,13 +8,14 @@ export function createCharacterEditor(host,onApply){
   const select=(path,label,value,choices)=>`<label>${esc(label)}<select data-edit-path="${esc(JSON.stringify(path))}">${choices.map(([v,t])=>`<option value="${esc(v)}" ${v===value?'selected':''}>${esc(t)}</option>`).join('')}</select></label>`;
   const section=(id,label,html,open=false)=>`<details class="subsection" data-editor-section="${id}" ${open?'open':''}><summary>${label}</summary><div class="subsection-content">${html}</div></details>`;
   const grid=s=>`<div class="character-edit-grid">${s}</div>`;
-  function set(path,value){let obj=draft;for(const k of path.slice(0,-1))obj=obj[k];obj[path.at(-1)]=value;pending=true;modified=true;status('有未应用修改；开始模拟或预览时也会自动应用。');}
+  function set(path,value){let obj=draft;for(const k of path.slice(0,-1))obj=obj[k];obj[path.at(-1)]=value;pending=true;modified=true;status('有未应用修改');}
   function status(message,error=false){const el=host.querySelector('#character-edit-status');if(el){el.textContent=message;el.classList.toggle('editor-error',error);}}
+  host.addEventListener('toggle',e=>{const el=e.target;if(el.open&&el.matches('[data-editor-section]')&&el.parentElement?.classList.contains('character-editor-body'))for(const other of el.parentElement.children)if(other!==el&&other.tagName==='DETAILS')other.open=false;},true);
   function render(){
     if(!base){host.hidden=true;return;}
     const opened=new Set([...host.querySelectorAll('[data-editor-section][open]')].map(e=>e.dataset.editorSection));
     host.hidden=false;
-    let html=section('levels','战斗等级',grid(Object.entries(COMBAT_LEVELS).map(([k,v])=>field(['levels',k],v,draft.levels[k],{min:1})).join('')),true);
+    let html=section('levels','战斗等级',grid(Object.entries(COMBAT_LEVELS).map(([k,v])=>field(['levels',k],v,draft.levels[k],{min:1})).join('')));
     if(!catalog){html+='<p>游戏数据加载后，可编辑装备、技能、触发条件与增益。</p>';}
     else {
       const maxEnh=enhancementMaximum(catalog);
@@ -33,11 +34,11 @@ export function createCharacterEditor(host,onApply){
       const buffOptions=Object.entries(catalog.buffTypeDetailMap).filter(([,v])=>v.isCombat).map(([k,v])=>[k,name(k,v)]);
       const buffs=Object.entries(BUFF_GROUPS).map(([group,label])=>section(`buff-${group}`,`${label}增益`,draft.buffs[group].map((b,i)=>{
         const choices=buffOptions.some(([k])=>k===b.typeHrid)?buffOptions:[...buffOptions,[b.typeHrid,name(b.typeHrid,catalog.buffTypeDetailMap[b.typeHrid])]];
-        return `<div class="editor-buff">${select(['buffs',group,i,'typeHrid'],'增益类型',b.typeHrid,choices)}${grid(field(['buffs',group,i,'ratioBoost'],'比例加成（%）',b.ratioBoost||0,{min:-1000000,max:1000000,step:'any',scale:.01})+field(['buffs',group,i,'flatBoost'],'固定加成',b.flatBoost||0,{min:-10000,step:'any'}))}<button type="button" class="text-button" data-remove-buff="${group}:${i}">删除此增益</button></div>`;
+        return `<div class="editor-buff">${select(['buffs',group,i,'typeHrid'],'增益类型',b.typeHrid,choices)}${grid(field(['buffs',group,i,'ratioBoost'],'比例加成 %',b.ratioBoost||0,{min:-1000000,max:1000000,step:'any',scale:.01})+field(['buffs',group,i,'flatBoost'],'固定加成',b.flatBoost||0,{min:-10000,step:'any'}))}<button type="button" class="text-button" data-remove-buff="${group}:${i}">删除此增益</button></div>`;
       }).join('')+`<button type="button" class="text-button" data-add-buff="${group}">添加${label}增益</button>`)).join('');
       html+=section('buffs','各来源增益',`<p class="editor-note">比例加成填百分数；固定加成按属性单位填写，概率类属性中 0.01 表示 1%。</p>${buffs}`);
       html+=section('labyrinth','迷宫升级与补给箱',grid(Object.entries(UPGRADES).map(([k,v])=>field(['upgrades',k],`${v}等级`,draft.upgrades[k])).join(''))+grid(Object.entries(CRATES).map(([k,label])=>{const kind=k.startsWith('tea')?'tea':k.startsWith('coffee')?'coffee':'food';return select(['crates',k],label,draft.crates[k],[['','不使用'],...Object.keys(catalog.labyrinthCrateDetailMap).filter(id=>id.endsWith(`_${kind}_crate`)).map(id=>[id,name(id,catalog.itemDetailMap[id])])]);}).join('')));
-      html+=section('rooms','房屋设施与等级',grid(Object.entries(catalog.houseRoomDetailMap).map(([k,v])=>field(['rooms',k],name(k,v),draft.rooms[k]||0,{max:Math.max(0,...Object.keys(v.upgradeCostsMap||{}).map(Number))||100})).join('')));
+      html+=section('rooms','房屋设施与等级',grid(Object.entries(catalog.houseRoomDetailMap).filter(([,v])=>v.usableInActionTypeMap?.['/action_types/combat']).map(([k,v])=>field(['rooms',k],name(k,v),draft.rooms[k]||0,{max:Math.max(0,...Object.keys(v.upgradeCostsMap||{}).map(Number))||100})).join('')));
       const tierNames={beginner:'初学者',novice:'新手',adept:'熟练者',veteran:'老手',elite:'精英',champion:'冠军'};
       html+=section('achievements','成就增益',`<p class="editor-note">完成该类全部成就后启用增益。</p>${Object.entries(catalog.achievementTierDetailMap).sort(([,a],[,b])=>a.sortIndex-b.sortIndex).map(([k,t])=>{
         const ids=Object.entries(catalog.achievementDetailMap).filter(([,v])=>v.tierHrid===k).map(([id])=>id),count=ids.filter(id=>draft.achievements[id]).length;
@@ -45,7 +46,7 @@ export function createCharacterEditor(host,onApply){
         return `<div class="editor-achievement"><strong>${label}（<span data-tier-count="${esc(k)}">${count}</span>/${ids.length}）</strong><p>${k.endsWith('/novice')?'经验':name(t.buff.typeHrid,catalog.buffTypeDetailMap[t.buff.typeHrid])}：+${boost}% · <span data-tier-state="${esc(k)}">${count===ids.length?'已启用':'未启用'}</span></p><label>已完成数量<input type="number" data-achievement-tier="${esc(k)}" min="0" max="${ids.length}" step="1" value="${count}"></label></div>`;
       }).join('')}`);
     }
-    host.innerHTML=`<summary>角色详细数据</summary><div class="subsection-content character-editor-body">${html}<div class="editor-actions"><button type="button" class="secondary-button" data-apply-character ${!catalog?'disabled':''}>应用修改</button><button type="button" class="text-button" data-reset-character>恢复导入数据</button></div><p id="character-edit-status" role="status">${pending?'有未应用修改':modified?'已应用模拟修改':'当前为导入数据'}</p></div>`;
+    host.innerHTML=`<summary>角色数据</summary><div class="subsection-content character-editor-body">${html}<div class="editor-actions"><button type="button" class="secondary-button" data-apply-character ${!catalog?'disabled':''}>应用修改</button><button type="button" class="text-button" data-reset-character>恢复导入数据</button></div><p id="character-edit-status" role="status">${pending?'有未应用修改':modified?'已应用模拟修改':'当前为导入数据'}</p></div>`;
     for(const el of host.querySelectorAll('[data-editor-section]'))if(opened.has(el.dataset.editorSection))el.open=true;
     renderTriggers();
   }

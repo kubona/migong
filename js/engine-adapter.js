@@ -39,56 +39,6 @@ export function mulberry32(seed) {
   };
 }
 
-export function summarizeAttackMap(attacks, playerHrid = "player1") {
-  const summary = { hits: 0, misses: 0, total: 0, hitRate: 0, byAbility: {} };
-  const targets = attacks?.[playerHrid] || {};
-  for (const abilities of Object.values(targets)) {
-    for (const [ability, buckets] of Object.entries(abilities || {})) {
-      const slot = summary.byAbility[ability] || { hits: 0, misses: 0 };
-      let localHits = 0;
-      let localMisses = 0;
-      for (const [bucket, rawCount] of Object.entries(buckets || {})) {
-        const count = Math.max(0, Number(rawCount) || 0);
-        if (bucket === "miss") localMisses += count;
-        else localHits += count;
-      }
-      slot.hits += localHits;
-      slot.misses += localMisses;
-      summary.hits += localHits;
-      summary.misses += localMisses;
-      summary.byAbility[ability] = slot;
-    }
-  }
-  summary.total = summary.hits + summary.misses;
-  summary.hitRate = summary.total > 0 ? summary.hits / summary.total : 0;
-  return summary;
-}
-
-export function summarizeDamageMap(attacks, playerHrid = "player1") {
-  const counterAbilities = new Set(["physicalThorns", "elementalThorns", "retaliation"]);
-  const summary = { totalDamage: 0, counterDamage: 0, byAbility: {} };
-  const targets = attacks?.[playerHrid] || {};
-  for (const abilities of Object.values(targets)) {
-    for (const [ability, buckets] of Object.entries(abilities || {})) {
-      const slot = summary.byAbility[ability] || { damage: 0, hits: 0 };
-      for (const [bucket, rawCount] of Object.entries(buckets || {})) {
-        if (bucket === "miss") continue;
-        const damage = Number(bucket);
-        const count = Math.max(0, Number(rawCount) || 0);
-        if (!Number.isFinite(damage) || damage < 0 || count <= 0) continue;
-        slot.damage += damage * count;
-        slot.hits += count;
-      }
-      summary.byAbility[ability] = slot;
-    }
-  }
-  summary.totalDamage = Object.values(summary.byAbility).reduce((total, entry) => total + entry.damage, 0);
-  for (const ability of counterAbilities) {
-    summary.counterDamage += summary.byAbility[ability]?.damage || 0;
-  }
-  return summary;
-}
-
 function engineWorkerMain() {
   var Player = null;
   var CombatSimulator = null;
@@ -223,29 +173,6 @@ function engineWorkerMain() {
     CombatSimulator.prototype.__fullSearchRecorder = true;
   }
 
-  function attackSummary(attacks, playerHrid) {
-    var summary = { hits: 0, misses: 0, total: 0, hitRate: 0, byAbility: {} };
-    var targets = attacks && attacks[playerHrid] ? attacks[playerHrid] : {};
-    Object.keys(targets).forEach(function (target) {
-      Object.keys(targets[target] || {}).forEach(function (ability) {
-        var values = targets[target][ability] || {};
-        var hits = 0, misses = 0;
-        Object.keys(values).forEach(function (bucket) {
-          var count = Math.max(0, finite(values[bucket], 0));
-          if (bucket === "miss") misses += count;
-          else hits += count;
-        });
-        summary.hits += hits;
-        summary.misses += misses;
-        var slot = summary.byAbility[ability] || { hits: 0, misses: 0 };
-        slot.hits += hits; slot.misses += misses; summary.byAbility[ability] = slot;
-      });
-    });
-    summary.total = summary.hits + summary.misses;
-    summary.hitRate = summary.total > 0 ? summary.hits / summary.total : 0;
-    return summary;
-  }
-
   async function simulate(params) {
     if (!Player) throw new Error("engine is not initialized");
     var requestedTrials = Math.max(1, Math.floor(finite(params.trials, 1)));
@@ -255,11 +182,6 @@ function engineWorkerMain() {
     ensureRecorder();
     var originalRandom = Math.random;
     var completed = [];
-    var aggregateAttacks = { hits: 0, misses: 0, total: 0, hitRate: 0, byAbility: {} };
-    var aggregateDamage = { totalDamage: 0, counterDamage: 0, byAbility: {} };
-    var combatStats = null;
-    var ranOutOfMana = false;
-    var simulatedSeconds = 0;
     var normalizedBuffs = normalizeBuffs((params.extraBuffs || []).concat(params.labyrinthCombatBuffs || []));
     try {
       for (var trialIndex = 0; trialIndex < requestedTrials; trialIndex += 1) {
@@ -283,33 +205,11 @@ function engineWorkerMain() {
         var entry = (simulator.__fullSearchStats.completed || [])[0];
         if (!entry) entry = { reason: "timeout", durationNs: durationSeconds * ONE_SECOND_NS };
         completed.push(entry);
-        simulatedSeconds += Math.max(0, finite(simulator.simulationTime, entry.durationNs)) / ONE_SECOND_NS;
-        var localAttacks = attackSummary(result && result.attacks, String(player.hrid || "player1"));
-        var localDamage = summarizeDamageMap(result && result.attacks, String(player.hrid || "player1"));
-        aggregateAttacks.hits += localAttacks.hits;
-        aggregateAttacks.misses += localAttacks.misses;
-        Object.keys(localAttacks.byAbility || {}).forEach(function (ability) {
-          var target = aggregateAttacks.byAbility[ability] || { hits: 0, misses: 0 };
-          target.hits += localAttacks.byAbility[ability].hits;
-          target.misses += localAttacks.byAbility[ability].misses;
-          aggregateAttacks.byAbility[ability] = target;
-        });
-        aggregateDamage.totalDamage += localDamage.totalDamage;
-        aggregateDamage.counterDamage += localDamage.counterDamage;
-        Object.keys(localDamage.byAbility || {}).forEach(function (ability) {
-          var target = aggregateDamage.byAbility[ability] || { damage: 0, hits: 0 };
-          target.damage += localDamage.byAbility[ability].damage;
-          target.hits += localDamage.byAbility[ability].hits;
-          aggregateDamage.byAbility[ability] = target;
-        });
-        if (!combatStats) combatStats = clone(player.combatDetails && player.combatDetails.combatStats);
-        ranOutOfMana = ranOutOfMana || Boolean(result && result.playerRanOutOfMana && result.playerRanOutOfMana[player.hrid]);
+
       }
     } finally {
       Math.random = originalRandom;
     }
-    aggregateAttacks.total = aggregateAttacks.hits + aggregateAttacks.misses;
-    aggregateAttacks.hitRate = aggregateAttacks.total > 0 ? aggregateAttacks.hits / aggregateAttacks.total : 0;
     var successes = completed.filter(function (entry) { return entry.reason === "success"; }).length;
     var failedByDeath = completed.filter(function (entry) { return entry.reason === "death"; }).length;
     var failedByTimeout = completed.filter(function (entry) { return entry.reason === "timeout"; }).length;
@@ -328,18 +228,7 @@ function engineWorkerMain() {
       averageClearSeconds: successes > 0 ? successfulSpentSeconds / successes : Infinity,
       minElapsedSeconds: durations.length ? Math.min.apply(Math, durations) : 0,
       maxElapsedSeconds: durations.length ? Math.max.apply(Math, durations) : 0,
-      attackSummary: aggregateAttacks,
-      damageSummary: aggregateDamage,
-      combatStats: combatStats,
-      debug: {
-        requestedTrials: requestedTrials,
-        trialOffset: trialOffset,
-        attemptCount: requestedTrials,
-        encounters: successes,
-        simulatedSeconds: simulatedSeconds,
-        independentTrials: true,
-        ranOutOfMana: ranOutOfMana,
-      },
+
     };
   }
 
@@ -368,7 +257,6 @@ export function buildEngineWorkerSource(vendorChunkSource, workerChunkSource) {
     RUNTIME_PRELUDE,
     String(vendorChunkSource || ""),
     String(workerChunkSource || ""),
-    summarizeDamageMap.toString(),
     `(${engineWorkerMain.toString()})();`,
   ].join("\n\n");
 }
@@ -400,59 +288,13 @@ export function splitTrials(trials, workerCount, minimumTrialsPerWorker = 2) {
   });
 }
 
-function mergeAbilityCounters(results, summaryName, valueNames) {
-  const merged = {};
-  for (const result of results) {
-    for (const [ability, source] of Object.entries(result?.[summaryName]?.byAbility || {})) {
-      const target = merged[ability] || Object.fromEntries(valueNames.map((name) => [name, 0]));
-      for (const name of valueNames) target[name] += Math.max(0, Number(source?.[name]) || 0);
-      merged[ability] = target;
-    }
-  }
-  return merged;
-}
-
-export function mergeRoomResults(results, metadata = {}) {
-  const shards = (results || []).filter(Boolean);
-  const sum = (field) => shards.reduce((total, result) => total + Math.max(0, Number(result?.[field]) || 0), 0);
-  const successes = sum("successes");
-  const trials = sum("trials");
-  const successfulSpentSeconds = sum("successfulSpentSeconds");
-  const attackByAbility = mergeAbilityCounters(shards, "attackSummary", ["hits", "misses"]);
-  const damageByAbility = mergeAbilityCounters(shards, "damageSummary", ["damage", "hits"]);
-  const hits = shards.reduce((total, result) => total + Math.max(0, Number(result?.attackSummary?.hits) || 0), 0);
-  const misses = shards.reduce((total, result) => total + Math.max(0, Number(result?.attackSummary?.misses) || 0), 0);
-  const elapsedMins = shards.map((result) => Number(result?.minElapsedSeconds)).filter(Number.isFinite);
-  const elapsedMaxes = shards.map((result) => Number(result?.maxElapsedSeconds)).filter(Number.isFinite);
-  return {
-    successes,
-    trials,
-    failedByDeath: sum("failedByDeath"),
-    failedByTimeout: sum("failedByTimeout"),
-    totalSpentSeconds: sum("totalSpentSeconds"),
-    successfulSpentSeconds,
-    averageClearSeconds: successes > 0 ? successfulSpentSeconds / successes : Infinity,
-    minElapsedSeconds: elapsedMins.length ? Math.min(...elapsedMins) : 0,
-    maxElapsedSeconds: elapsedMaxes.length ? Math.max(...elapsedMaxes) : 0,
-    attackSummary: { hits, misses, total: hits + misses, hitRate: hits + misses > 0 ? hits / (hits + misses) : 0, byAbility: attackByAbility },
-    damageSummary: {
-      totalDamage: shards.reduce((total, result) => total + Math.max(0, Number(result?.damageSummary?.totalDamage) || 0), 0),
-      counterDamage: shards.reduce((total, result) => total + Math.max(0, Number(result?.damageSummary?.counterDamage) || 0), 0),
-      byAbility: damageByAbility,
-    },
-    combatStats: shards.find((result) => result?.combatStats)?.combatStats || null,
-    debug: {
-      requestedTrials: trials,
-      attemptCount: shards.reduce((total, result) => total + Math.max(0, Number(result?.debug?.attemptCount) || 0), 0),
-      encounters: shards.reduce((total, result) => total + Math.max(0, Number(result?.debug?.encounters) || 0), 0),
-      simulatedSeconds: shards.reduce((total, result) => total + Math.max(0, Number(result?.debug?.simulatedSeconds) || 0), 0),
-      independentTrials: shards.every((result) => result?.debug?.independentTrials === true),
-      ranOutOfMana: shards.some((result) => result?.debug?.ranOutOfMana === true),
-      workerCount: Math.max(1, Math.floor(Number(metadata.workerCount) || 1)),
-      parallelShards: shards.length,
-      shardTrials: shards.map((result) => Math.max(0, Number(result?.trials) || 0)),
-    },
-  };
+export function mergeRoomResults(results) {
+  const shards=results.filter(Boolean),sum=key=>shards.reduce((n,r)=>n+(r[key]||0),0);
+  const successes=sum('successes'),successfulSpentSeconds=sum('successfulSpentSeconds');
+  return {trials:sum('trials'),successes,failedByDeath:sum('failedByDeath'),failedByTimeout:sum('failedByTimeout'),
+    totalSpentSeconds:sum('totalSpentSeconds'),successfulSpentSeconds,
+    averageClearSeconds:successes?successfulSpentSeconds/successes:Infinity,
+    minElapsedSeconds:Math.min(...shards.map(r=>r.minElapsedSeconds||0)),maxElapsedSeconds:Math.max(0,...shards.map(r=>r.maxElapsedSeconds||0))};
 }
 
 export class CombatEngine {

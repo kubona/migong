@@ -1,643 +1,103 @@
 import {createCharacterEditor} from './character-editor.js';
-import {resultLevelLabel,resultSearchStatus} from './result-status.js';
-import {
-  COMBAT_EQUIPMENT_TYPES,
-  LABYRINTH_MONSTER_HRIDS,
-  compareCharacterToCatalog,
-  floorRangeText,
-  monsterLevelToFloorRange,
-  parseJsonText,
-  sanitizeCharacterData,
-  summarizeCharacter,
-  validateClientData,
-} from "./data-model.js";
-import { CombatEngine, recommendedWorkerCount } from "./engine-adapter.js";
-import { DEFAULT_FIXED_ABILITY_RULES, learnedFixedAbilityChoices, sanitizeFixedAbilityRules } from "./fixed-skill-options.js";
-import { chineseName, loadChineseTranslations } from "./localization.js";
-import { optimizeMonster } from "./optimizer.js";
-import { downloadLoadouts, officialIconMarkup, loadoutRows } from "./loadout-image.js";
-import { createPauseController } from "./pause-controller.js";
-import { formatRunDuration, progressWithinMonster, remainingMilliseconds } from "./progress-metrics.js";
-import { SIMULATION_DIRECTION_OPTIONS } from "./equipment-presets.js";
-import { previewMonster } from './exhaustive-optimizer.js';
-import { RunStorage, fingerprint, runtimeFingerprint, learningRuntimeFingerprint } from './run-storage.js';
-import { exportLearning, importLearning } from './learning-library.js';
-import { buildSimulationInput } from './player-dto.js';
-import { createStoredAudit } from './stored-audit.js';
-import { createStagedAudit } from './staged-audit.js';
-import { WorkEstimator } from './work-estimator.js';
-import { maximumBinaryProbeCount } from './progress-metrics.js';
-
+import {LABYRINTH_MONSTER_HRIDS,sanitizeCharacterData,validateClientData,compareCharacterToCatalog} from './data-model.js';
+import {loadChineseTranslations,chineseName} from './localization.js';
+import {SIMULATION_DIRECTION_OPTIONS,ROTATION_EQUIPMENT} from './equipment-presets.js';
+import {SLOT_LABELS} from './character-editor-model.js';
+import {learnedFixedAbilityChoices,sanitizeFixedAbilityRules,DEFAULT_FIXED_ABILITY_RULES} from './fixed-skill-options.js';
+import {classifyMonster} from './classifier.js';
+import {prepareDirection,directionProfile,resolveSimulationDirections,previewMonster} from './candidate-planner.js';
+import {searchExploration} from './exploration-search.js';
+import {CombatEngine,recommendedWorkerCount} from './engine-adapter.js';
+import {RunStorage,fingerprint,runtimeFingerprint} from './run-storage.js';
+import {createPauseController} from './pause-controller.js';
 await loadChineseTranslations();
-
-const SLOT_NAMES = {
-  "/equipment_types/head": "头", "/equipment_types/body": "身", "/equipment_types/legs": "腿", "/equipment_types/feet": "脚",
-  "/equipment_types/hands": "手", "/equipment_types/main_hand": "主", "/equipment_types/two_hand": "主", "/equipment_types/off_hand": "副",
-  "/equipment_types/pouch": "袋子", "/equipment_types/back": "背", "/equipment_types/neck": "项链", "/equipment_types/earrings": "耳环", "/equipment_types/ring": "戒指",
-};
-const MONSTER_NAMES = Object.fromEntries(LABYRINTH_MONSTER_HRIDS.map((hrid) => [hrid, chineseName(hrid, hrid.split("/").pop())]));
-const HAND_TYPES = new Set(["/equipment_types/main_hand", "/equipment_types/two_hand", "/equipment_types/off_hand"]);
-const EQUIPMENT_OPTIONS = [
-  {value:'/equipment_types/head',label:'头部'}, {value:'/equipment_types/body',label:'身体'},
-  {value:'/equipment_types/legs',label:'腿部'}, {value:'/equipment_types/hands',label:'手部'},
-  {value:'/equipment_types/off_hand',label:'副手'},
-];
-const DEFAULT_EQUIPMENT_VALUES = new Set(EQUIPMENT_OPTIONS.map(e=>e.value));
-const CHOICE_GROUP_IDS = { monsters: "monster-options", equipment: "equipment-options", skills: "skill-options" };
-const FIXED_RULE_CATEGORIES = [
-  { key: "magic", label: "魔法类" },
-  { key: "physical", label: "物理类" },
-  { key: "mimic", label: "宝箱怪特化" },
-];
-const elements = Object.fromEntries([
-  'search-mode','learning-status','export-learning','import-learning',
-  'preview-button','resume-button','candidate-panel','candidate-preview','checkpoint-status','performance-status',
-  "bridge-status", "character-file", "client-file", "character-card", "client-card", "character-status", "client-status", "data-summary",
-  "monster-options", "equipment-options", "skill-options", "fixed-rules-status", "fixed-skill-rules", "min-monster-level", "max-monster-level", "test-trials", "review-trials", "optimize-trials", "ranking-trials", "equipment-preset-source", "resource-utilization",
-  "target-rate", "parallel-count", "start-button", "pause-button", "cancel-button", "run-status", "audit-status", "run-time-status", "elapsed-time", "remaining-time", "progress-percent", "progress-track", "progress-bar", "results-section", "loadout-summary", "monster-tabs", "monster-detail", "export-button", "export-loadout-button", "export-audit-button",
-].map((id) => [id, document.getElementById(id)]));
-const state = { character: null, catalog: null, results: [], activeMonster: 0, resultSelections: new Map(), engines: [], monsterProgress: new Map(), overallProgress: 0, abortController: null, pauseController: null, isPaused: false, lastRunStatus: "", startedAt: null, runStartedAtMilliseconds: 0, pausedAtMilliseconds: 0, pausedTotalMilliseconds: 0, timingInterval: null, auditRenderTimer: null, pendingAuditRecord: null, progressRenderTimer: null, pendingProgress: null, bridgeRevision: 0, fixedRules: structuredClone(DEFAULT_FIXED_ABILITY_RULES), auditRecorder: null, cpuWorkerCount: 0, resourceUtilization: 80 };
-
-const characterEditor=createCharacterEditor(document.getElementById('character-editor'),character=>{
-  state.character=character;
-  state.results=[];state.resultSelections=new Map();state.monsterProgress=new Map();
-  elements['results-section'].hidden=true;elements['candidate-preview'].innerHTML='';
-  elements['export-button'].disabled=true;elements['export-loadout-button'].disabled=true;
-  state.auditRecorder=null;elements['export-audit-button'].disabled=true;elements['audit-status'].hidden=true;
-  renderFixedSkillRules();updateReadyState();
-});
-
-function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
-function percent(value, digits = 1) { return `${(Number(value || 0) * 100).toFixed(digits)}%`; }
-function seconds(value) { return Number.isFinite(value) ? `${value.toFixed(2)} 秒` : "—"; }
-function highestMonsterLevelText(result) { const level = result?.highestMonsterLevel ?? result?.highestLevel; return level == null ? "—" : `${resultLevelLabel(result)} Lv.${level}${result?.searchComplete === false ? " · 未完成" : ""}`; }
-function checkAbort() { if (state.abortController?.signal.aborted) throw new DOMException("模拟已取消", "AbortError"); }
-function setRunningStatus(text) {
-  state.lastRunStatus = text;
-  elements["run-status"].textContent = state.isPaused ? `已暂停 · ${text}` : text;
+const $=id=>document.getElementById(id),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const name=id=>chineseName(id,'未命名'),pct=n=>(100*n).toFixed(2)+'%',seconds=n=>Number.isFinite(n)?n.toFixed(2)+'秒':'—';
+const state={character:null,source:null,catalog:null,rules:structuredClone(DEFAULT_FIXED_ABILITY_RULES),results:[],busy:false,controller:null,engine:null,pause:null,store:null,bridgeRevision:0,selected:0,point:0};
+function status(s){$('run-status').textContent=s;}
+function resetResults(){state.results=[];state.selected=0;state.point=0;$('results').hidden=true;$('preview-panel').hidden=true;}
+const editor=createCharacterEditor($('character-editor'),c=>{state.character=c;resetResults();ready();});
+function ready(){const okay=!!(state.character&&state.catalog);for(const id of ['start','resume','preview'])$(id).disabled=!okay||state.busy;if(!state.busy)status(okay?'已就绪':'请导入数据');if(okay){state.rules=sanitizeFixedAbilityRules(state.rules,state.catalog,state.character);renderRules();}}
+function loadCharacter(raw){state.source=sanitizeCharacterData(raw);editor.load(state.source,state.catalog);$('character-status').textContent='已导入';ready();}
+function loadCatalog(raw){const v=validateClientData(raw);if(!v.ok)throw Error(v.errors.join('；'));state.catalog=raw;editor.catalog(raw);$('client-status').textContent='已导入';ready();}
+function guarded(fn){return async(...args)=>{try{await fn(...args);}catch(e){status(e.message);}};}
+for(const [id,load]of [['character-file',loadCharacter],['client-file',loadCatalog]])$(id).addEventListener('change',guarded(async e=>{if(state.busy)return;const file=e.target.files[0];if(file){let raw;try{raw=JSON.parse(await file.text());}catch{throw Error('文件不是有效的角色或游戏数据');}load(raw);}}));
+function selectedMonsters(){return [...$('monster-options').querySelectorAll('input:checked')].map(e=>e.value);}
+function updateScope(){$('scope-summary').textContent=`${selectedMonsters().length}种怪物`;}
+$('monster-options').innerHTML=LABYRINTH_MONSTER_HRIDS.map(id=>`<div class="monster"><label><input type="checkbox" value="${id}" checked>${esc(name(id))}</label><select data-direction="${id}" aria-label="${esc(name(id))}配装方向"><option value="auto">自动</option>${SIMULATION_DIRECTION_OPTIONS.filter(d=>d.value!=='auto').map(d=>`<option value="${esc(d.value)}">${esc(d.label)}</option>`).join('')}</select></div>`).join('');
+$('equipment-options').innerHTML=Object.keys(ROTATION_EQUIPMENT).map(id=>`<label><input type="checkbox" value="${id}" checked>${SLOT_LABELS[id.split('/').pop()]}</label>`).join('');
+$('monster-options').addEventListener('change',updateScope);document.querySelectorAll('[data-all]').forEach(b=>b.onclick=()=>{$('monster-options').querySelectorAll('input').forEach(e=>e.checked=b.dataset.all==='true');updateScope();});updateScope();
+function renderRules(){
+ if(!state.character||!state.catalog)return;
+ const choices=aura=>learnedFixedAbilityChoices(state.catalog,state.character,aura).map(e=>e.hrid);
+ const select=(category,index,value,aura)=>`<select data-category="${category}" data-index="${index}"><option value="">不固定</option>${choices(aura).map(id=>`<option value="${id}" ${id===value?'selected':''}>${esc(name(id))}</option>`).join('')}</select>`;
+ $('fixed-rules').innerHTML=Object.entries({magic:'魔法',physical:'物理',mimic:'宝箱怪'}).map(([category,label])=>{const r=state.rules[category];return `<div class="fixed-group"><h3>${label}</h3><div class="grid"><label>特殊技能${select(category,-1,r.aura,true)}</label>${r.requiredActives.map((id,i)=>`<label>主动技能${select(category,i,id,false)}<button data-remove="${category}:${i}">删除</button></label>`).join('')}</div>${r.requiredActives.length<4?`<button data-add="${category}">添加主动技能</button>`:''}</div>`;}).join('');
 }
-
-function activeRunMilliseconds(now = Date.now()) {
-  if (!state.runStartedAtMilliseconds) return 0;
-  const currentPause = state.isPaused && state.pausedAtMilliseconds ? now - state.pausedAtMilliseconds : 0;
-  return Math.max(0, now - state.runStartedAtMilliseconds - state.pausedTotalMilliseconds - currentPause);
+$('fixed-rules').addEventListener('change',e=>{if(!e.target.dataset.category)return;const r=state.rules[e.target.dataset.category],i=Number(e.target.dataset.index);if(i<0)r.aura=e.target.value;else r.requiredActives[i]=e.target.value;});
+$('fixed-rules').addEventListener('click',e=>{if(e.target.dataset.add){state.rules[e.target.dataset.add].requiredActives.push('');renderRules();}if(e.target.dataset.remove){const[c,i]=e.target.dataset.remove.split(':');state.rules[c].requiredActives.splice(Number(i),1);renderRules();}});
+const fields=['minimum','maximum','target','resource','screen-trials','level-trials','final-trials','preset'];
+function settings(){
+ for(const id of fields){const e=$(id);if(!e.checkValidity()||e.value==='')throw Error('请检查模拟设置');}
+ if(Number($('minimum').value)>Number($('maximum').value))throw Error('最低等级不能高于最高等级');
+ for(const id of ['minimum','maximum','screen-trials','level-trials','final-trials'])if(!Number.isInteger(Number($(id).value)))throw Error('等级和场数必须为整数');
+ return {fields:Object.fromEntries(fields.map(id=>[id,$(id).value])),monsters:selectedMonsters(),equipment:[...$('equipment-options').querySelectorAll('input:checked')].map(e=>e.value),
+ directions:Object.fromEntries([...document.querySelectorAll('[data-direction]')].map(e=>[e.dataset.direction,e.value])),aura:$('aura').checked,active:$('active').checked,rules:sanitizeFixedAbilityRules(state.rules,state.catalog,state.character),characterEditor:editor.snapshot()};
 }
-
-function updateRunTiming() {
-  if (!state.runStartedAtMilliseconds) return;
-  const elapsed = activeRunMilliseconds();
-  elements["elapsed-time"].textContent = formatRunDuration(elapsed);
-  elements["progress-percent"].textContent = `${(state.overallProgress * 100).toFixed(1)}%`;
-  const estimate=state.workEstimator?.estimate(elapsed-(state.resumeElapsed||0),selectedValues('monster-options').length);
-  const remaining = estimate && state.workEstimator.newTrials ? (estimate.low+estimate.high)/2 : null;
-  elements["remaining-time"].textContent = state.overallProgress >= 1 ? "已完成"
-    : remaining == null || elapsed < 3000 || state.overallProgress < 0.005 ? "计算中"
-      : `约 ${formatRunDuration(estimate.low)}–${formatRunDuration(estimate.high)}`;
-  if (state.searchMode === 'learning' && state.overallProgress < 1) {
-    const f = [...state.monsterProgress.values()].reduce((a, b) => a + b, 0) / Math.max(1, state.monsterProgress.size);
-    elements['remaining-time'].textContent = f > 0.01 && !state.resumeElapsed ? `约 ${formatRunDuration(elapsed * (1 - f) / f)}（动态估算，阶段进度估算）` : '计算中';
-  }
-  const engine=state.engines[0];
-  if(engine){const s=engine.stats(); elements['performance-status'].textContent=`计算中 ${s.busyWorkers}/${s.totalWorkers} · 排队 ${s.pendingTasks} · 已派发 ${s.jobs} · 队列峰值 ${s.maxQueue}`;}
-}
-
-function finishPausedInterval(now = Date.now()) {
-  if (state.pausedAtMilliseconds) {
-    state.pausedTotalMilliseconds += Math.max(0, now - state.pausedAtMilliseconds);
-    state.pausedAtMilliseconds = 0;
-  }
-}
-
-function setOverallProgress(value) {
-  state.overallProgress = Math.max(state.overallProgress, Math.min(1, Number(value) || 0));
-  const percentage = Math.min(100, state.overallProgress * 100);
-  elements["progress-bar"].style.width = `${percentage.toFixed(1)}%`;
-  elements["progress-track"].setAttribute("aria-valuenow", percentage.toFixed(1));
-  updateRunTiming();
-}
-
-function renderAuditStatus(lastRecord = null) {
-  const summary = state.auditRecorder?.summary();
-  if (!summary?.actualSimulationBatches) {
-    elements["audit-status"].hidden = true;
-    elements["export-audit-button"].disabled = true;
-    return;
-  }
-  const stage = summary.stageSummary || {};
-  const stages = state.searchMode === 'learning' ? `初始二分 ${stage.bootstrap?.batches || 0} · 粗筛 ${stage.screen?.batches || 0} · 升阶 ${stage.step?.batches || 0} · 补样 ${stage.boundary?.batches || 0} · 纪录确认 ${stage.confirm?.batches || 0} · 顺序排名 ${stage.ranking?.batches || 0}` : `测试 ${stage.test?.batches || 0} · 复核 ${stage.review?.batches || 0} · 优化 ${stage.optimize?.batches || 0}`;
-  const latest = lastRecord ? ` · 最近：${lastRecord.monsterName || lastRecord.monsterHrid} · ${lastRecord.stageLabel} · ${lastRecord.candidateIndex != null ? `方案 ${lastRecord.candidateIndex + 1}` : "方案"} · Lv.${lastRecord.roomLevel}（${lastRecord.result?.trials || lastRecord.trialsRequested}场）` : "";
-  const failed = summary.failedBatches ? ` · 失败批次 ${summary.failedBatches}` : "";
-  elements["audit-status"].textContent = `已完成 ${summary.completedTrials.toLocaleString("zh-CN")} 场战斗 · ${summary.completedBatches.toLocaleString("zh-CN")} 个模拟批次 · ${summary.uniqueLoadouts.toLocaleString("zh-CN")} 个阶段方案／顺序 · ${stages}${failed}${latest}`;
-  elements["audit-status"].hidden = false;
-  elements["export-audit-button"].disabled = false;
-}
-
-function flushAuditStatus() {
-  if (state.auditRenderTimer) clearTimeout(state.auditRenderTimer);
-  state.auditRenderTimer = null;
-  const record = state.pendingAuditRecord;
-  state.pendingAuditRecord = null;
-  renderAuditStatus(record);
-}
-
-function scheduleAuditStatus(record) {
-  state.workEstimator?.record(record);
-  state.pendingAuditRecord = record;
-  if (state.auditRenderTimer) return;
-  state.auditRenderTimer = setTimeout(flushAuditStatus, 200);
-}
-
-function flushProgressStatus() {
-  if (state.progressRenderTimer) clearTimeout(state.progressRenderTimer);
-  state.progressRenderTimer = null;
-  const pending = state.pendingProgress;
-  state.pendingProgress = null;
-  if (!pending) return;
-  const aggregate = [...state.monsterProgress.values()].reduce((sum, value) => sum + value, 0);
-  if (pending.progress.learning) {
-    setOverallProgress(Math.min(0.999, aggregate / pending.total));
-    const p = pending.progress;
-    if(p.staged && p.phase!=='ranking'){setRunningStatus(`${pending.name} · ${p.reason || '阶段搜索'}${p.level ? ` Lv.${p.level}` : ''} · 已测试 ${p.testedPlans}/${p.totalPlans} 套 · 已结束 ${p.completedPlans} 套 · 已清退 ${p.discardedPlans || 0} 套${p.bestLevel != null ? ` · 当前纪录 Lv.${p.bestLevel}` : ''}`);return;}
-    if(p.phase==='ranking'){setRunningStatus(`${pending.name} · 排名复核 Lv.${p.level} · ${p.rankingCompleted}/${p.rankingTotal} 套 · 每套 ${p.rankingTrials} 场`);return;}
-    setRunningStatus(`${pending.name} · ${p.phase === 'index' ? '登记完整候选' : p.reason || '全量竞争'}${p.level ? ` Lv.${p.level}` : ''} · 已测试 ${p.testedPlans || 0}/${p.totalPlans} 套 · 已判明 ${p.completedPlans} 套 · 待追加 ${p.blockedPlans || 0} 套${p.bestCertifiedLevel != null ? ` · 已确认 Lv.${p.bestCertifiedLevel}` : ''}${p.possibleLevel != null ? ` · 待排除上界 Lv.${p.possibleLevel}` : ''}`);
-    return;
-  }
-  const work=state.workEstimator?.estimate(activeRunMilliseconds()-(state.resumeElapsed||0),pending.total);
-  setOverallProgress(Math.min(0.999,work?.progress ?? 0));
-  const { name, progress } = pending;
-  const phase = progress.phase === "test" ? "测试阶段" : progress.phase === "review" ? "复核阶段" : progress.phase === "optimize" ? "优化阶段" : "处理中";
-  const direction = progress.direction ? `${progress.direction.strategyZh || `${progress.direction.styleZh || ""}${progress.direction.damageTypeZh ? `·${progress.direction.damageTypeZh}` : ""}`} · ` : "";
-  const detail = `${direction}方案 ${progress.currentPlan || progress.completedPlans || 0}/${progress.totalPlans || "—"}${progress.level ? ` · 二分探测 Lv.${progress.level}` : ""}${progress.probeCount ? ` · 本方案第 ${progress.probeCount} 次探测` : ""}`;
-  setRunningStatus(`${name} · ${phase} ${progress.phaseComplete ? "100" : ((progress.phaseCompletedBatches||0)/Math.max(1,progress.phaseTotalBatches||1)*100).toFixed(1)}% · ${detail}`);
-}
-
-function scheduleProgressStatus(monsterHrid, name, total, progress) {
-  state.workEstimator?.observe(monsterHrid,progress);
-  state.monsterProgress.set(monsterHrid, progress.learning ? progress.progressFraction : progressWithinMonster(progress));
-  state.pendingProgress = { name, total, progress };
-  if (state.progressRenderTimer) return;
-  state.progressRenderTimer = setTimeout(flushProgressStatus, 100);
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
-}
-
-function downloadJson(payload, filename) {
-  const text = JSON.stringify(payload, (_key, value) => value instanceof Set ? [...value] : value, 2);
-  downloadBlob(new Blob([text], { type: "application/json" }), filename);
-}
-
-function checkbox(id, label, checked = true, group = "") { return `<label class="choice"><input type="checkbox" data-group="${group}" data-value="${escapeHtml(id)}" ${checked ? "checked" : ""}><span>${escapeHtml(label)}</span></label>`; }
-function monsterChoice(hrid) {
-  const options = SIMULATION_DIRECTION_OPTIONS.map((entry) => `<option value="${escapeHtml(entry.value)}">${escapeHtml(entry.label)}</option>`).join("");
-  return `<div class="monster-direction-card"><label class="choice"><input type="checkbox" data-group="monsters" data-value="${escapeHtml(hrid)}" checked><span>${escapeHtml(MONSTER_NAMES[hrid])}</span></label><select data-monster-direction="${escapeHtml(hrid)}" aria-label="${escapeHtml(MONSTER_NAMES[hrid])}模拟方向">${options}</select></div>`;
-}
-function renderChoices() {
-  elements["monster-options"].innerHTML = LABYRINTH_MONSTER_HRIDS.map(monsterChoice).join("");
-  elements["equipment-options"].innerHTML = EQUIPMENT_OPTIONS.map((entry) => checkbox(entry.value, entry.label, DEFAULT_EQUIPMENT_VALUES.has(entry.value), "equipment")).join("");
-  elements["skill-options"].innerHTML = checkbox("aura", "特殊技能组合", true, "skills") + checkbox("active", "四个普通主动技能组合", true, "skills");
-  const max = Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2));
-  elements["parallel-count"].innerHTML = Array.from({ length: max }, (_, index) => `<option value="${index + 1}">${index + 1} 个怪物</option>`).join("");
-  elements["parallel-count"].value = String(Math.min(2, max));
-}
-function selectedMonsterDirections() {
-  return Object.fromEntries(LABYRINTH_MONSTER_HRIDS.map((hrid) => [
-    hrid,
-    document.querySelector(`[data-monster-direction="${hrid}"]`)?.value || "auto",
-  ]));
-}
-function abilityChoices(wantAura) {
-  return learnedFixedAbilityChoices(state.catalog, state.character, wantAura);
-}
-function fixedSelect(category, key, label, index = null) {
-  const ready = Boolean(state.catalog && state.character);
-  const value = index == null ? state.fixedRules[category][key] : state.fixedRules[category].requiredActives[index];
-  const options = ready
-    ? [`<option value="">不固定</option>`, ...abilityChoices(key === "aura").map((entry) => `<option value="${escapeHtml(entry.hrid)}" ${value === entry.hrid ? "selected" : ""}>${escapeHtml(chineseName(entry.hrid, entry.name))}</option>`)].join("")
-    : `<option value="">等待角色和游戏数据</option>`;
-  const indexAttribute = index == null ? "" : ` data-fixed-index="${index}"`;
-  const remove = index == null ? "" : `<button type="button" class="fixed-remove" data-remove-fixed="${category}" data-remove-index="${index}" aria-label="删除该必选技能">删除</button>`;
-  return `<label class="fixed-rule-field"><span>${label}</span><span class="fixed-rule-control"><select data-fixed-category="${category}" data-fixed-key="${key}"${indexAttribute} ${ready ? "" : "disabled"}>${options}</select>${remove}</span></label>`;
-}
-function renderFixedSkillRules(skipSanitize = false) {
-  if (!skipSanitize && state.catalog && state.character) state.fixedRules = sanitizeFixedAbilityRules(state.fixedRules, state.catalog, state.character);
-  const ready = Boolean(state.catalog && state.character);
-  if (ready) {
-    const auraCount = abilityChoices(true).length;
-    const activeCount = abilityChoices(false).length;
-    elements["fixed-rules-status"].textContent = `可选：特殊 ${auraCount} · 主动 ${activeCount}`;
-    elements["fixed-rules-status"].hidden = false;
-  } else {
-    elements["fixed-rules-status"].hidden = true;
-  }
-  elements["fixed-skill-rules"].innerHTML = FIXED_RULE_CATEGORIES.map(({ key, label }) => {
-    const activeRows = state.fixedRules[key].requiredActives.map((_hrid, index) => fixedSelect(key, "requiredActives", `必选主动 ${index + 1}`, index)).join("");
-    const magicNote = key === "magic" ? `<p class="fixed-rule-note">主动4：元素 0CD</p>` : "";
-    const add = state.fixedRules[key].requiredActives.length < 4 ? `<button type="button" class="text-button fixed-add" data-add-fixed="${key}" ${ready ? "" : "disabled"}>增加必选主动</button>` : "";
-    return `<div class="fixed-rule-card"><h3>${label}</h3><div class="fixed-rule-grid">${fixedSelect(key, "aura", "必选特殊技能")}${activeRows}</div>${magicNote}${add}</div>`;
-  }).join("");
-  elements["fixed-skill-rules"].querySelectorAll("select[data-fixed-category]").forEach((select) => select.addEventListener("change", () => {
-    const category = state.fixedRules[select.dataset.fixedCategory];
-    if (select.dataset.fixedIndex == null) category[select.dataset.fixedKey] = select.value;
-    else category.requiredActives[Number(select.dataset.fixedIndex)] = select.value;
-  }));
-  elements["fixed-skill-rules"].querySelectorAll("[data-add-fixed]").forEach((button) => button.addEventListener("click", () => {
-    state.fixedRules[button.dataset.addFixed].requiredActives.push("");
-    renderFixedSkillRules(true);
-  }));
-  elements["fixed-skill-rules"].querySelectorAll("[data-remove-fixed]").forEach((button) => button.addEventListener("click", () => {
-    state.fixedRules[button.dataset.removeFixed].requiredActives.splice(Number(button.dataset.removeIndex), 1);
-    renderFixedSkillRules(true);
-  }));
-}
-function selectedValues(id) { return [...document.querySelectorAll(`#${id} input:checked`)].map((input) => input.dataset.value); }
-function installChoiceToolbar() {
-  document.querySelectorAll("[data-select-all]").forEach((button) => button.addEventListener("click", () => { document.querySelectorAll(`#${CHOICE_GROUP_IDS[button.dataset.selectAll]} input`).forEach((input) => { input.checked = true; }); }));
-  document.querySelectorAll("[data-clear-all]").forEach((button) => button.addEventListener("click", () => { document.querySelectorAll(`#${CHOICE_GROUP_IDS[button.dataset.clearAll]} input`).forEach((input) => { input.checked = false; }); }));
-}
-
-async function readJsonFile(file, label) { if (!file) throw new Error(`请选择${label}`); return parseJsonText(await file.text(), label); }
-function updateReadyState() {
-  const ready = Boolean(state.character && state.catalog);
-  elements["start-button"].disabled = !ready;
-  elements['preview-button'].disabled=!ready;
-  elements['resume-button'].disabled=!ready;
-  elements["run-status"].textContent = ready ? "数据已就绪，可以开始" : "请先加载两份数据";
-  if (!ready) return;
-  const summary = summarizeCharacter(state.character);
-  const coverage = compareCharacterToCatalog(state.character, state.catalog);
-  elements["data-summary"].hidden = false;
-  elements["data-summary"].innerHTML = coverage.warnings.length ? `<strong>数据需要注意：</strong>${coverage.warnings.map(escapeHtml).join("；")}` : `<strong>校验通过。</strong> 游戏版本 ${escapeHtml(state.catalog.gameVersion)}；角色拥有 ${summary.itemStacks} 组物品、已学 ${summary.learnedAbilities} 个战斗技能，迷宫历史最高 ${summary.highestFloor} 层。`;
-}
-function acceptCharacter(raw, source = "手动文件") {
-  if(state.busy || state.abortController)return;
-  state.character = sanitizeCharacterData(raw); state.importedCharacter=structuredClone(state.character); characterEditor.load(state.character,state.catalog); document.getElementById("data-panel").open=true; elements["character-card"].classList.add("ready");
-  const summary = summarizeCharacter(state.character); elements["character-status"].textContent = `已读取：${summary.itemStacks} 组物品、${summary.learnedAbilities} 个技能（${source}）`; renderFixedSkillRules(); updateReadyState();
-}
-function acceptCatalog(raw, source = "手动文件") {
-  if(state.busy || state.abortController)return;
-  const validation = validateClientData(raw); if (!validation.ok) throw new Error(validation.errors.join("；"));
-  state.catalog = raw; characterEditor.catalog(raw); elements["client-card"].classList.add("ready"); elements["client-status"].textContent = `已读取：${raw.gameVersion || "未知版本"}，${Object.keys(raw.combatMonsterDetailMap).length} 个怪物（${source}）`; renderFixedSkillRules(); updateReadyState();
-}
-elements["character-file"].addEventListener("change", async (event) => { try { acceptCharacter(await readJsonFile(event.target.files[0], "角色数据")); } catch (error) { state.character = null; state.importedCharacter=null; characterEditor.hide(); elements["character-status"].textContent = error.message; updateReadyState(); } });
-elements["client-file"].addEventListener("change", async (event) => { try { acceptCatalog(await readJsonFile(event.target.files[0], "游戏数据")); } catch (error) { state.catalog = null; elements["client-status"].textContent = error.message; updateReadyState(); } });
-
-async function pollBridge() {
-  if(state.busy || state.abortController || characterEditor.hasEdits()) return;
-  try {
-    const response = await fetch(`/api/data?since=${state.bridgeRevision}`, { cache: "no-store" });
-    if (!response.ok) throw new Error("本机桥接未启动");
-    const payload = await response.json();
-    if (payload.unchanged) return;
-    state.bridgeRevision = Number(payload.revision) || state.bridgeRevision;
-    if (payload.character) acceptCharacter(payload.character, "自动桥接");
-    if (payload.client) acceptCatalog(payload.client, "自动桥接");
-    elements["bridge-status"].textContent = payload.updatedAt ? `已连接本机数据桥接 · ${new Date(payload.updatedAt).toLocaleTimeString()}` : "已连接本机数据桥接，等待游戏数据";
-  } catch { elements["bridge-status"].textContent = "未连接本机数据桥接，可继续手动加载文件"; }
-}
-const localBridgeAvailable = location.hostname === "127.0.0.1" || location.hostname === "localhost";
-if (localBridgeAvailable) {
-  setInterval(pollBridge, 1500);
-  pollBridge();
-} else {
-  elements["bridge-status"].textContent = "网页版请手动加载两份数据；自动桥接仅连接 Windows 本机版";
-}
-renderChoices(); installChoiceToolbar(); renderFixedSkillRules();
-
-function renderTabs() {
-  const selected = selectedValues("monster-options");
-  elements["monster-tabs"].innerHTML = selected.map((hrid) => { const result = state.results[LABYRINTH_MONSTER_HRIDS.indexOf(hrid)]; return `<button type="button" role="tab" data-hrid="${hrid}" class="${state.activeMonster === LABYRINTH_MONSTER_HRIDS.indexOf(hrid) ? "active" : ""} ${result ? "" : "pending"}" aria-selected="${state.activeMonster === LABYRINTH_MONSTER_HRIDS.indexOf(hrid)}"><strong>${escapeHtml(result?.name || MONSTER_NAMES[hrid])}</strong><span>${result ? `${highestMonsterLevelText(result)} · ${percent(result.finalResult.clearRate)}` : "等待模拟"}</span></button>`; }).join("");
-  elements["monster-tabs"].querySelectorAll("button").forEach((button) => button.addEventListener("click", () => { state.activeMonster = LABYRINTH_MONSTER_HRIDS.indexOf(button.dataset.hrid); renderTabs(); renderDetail(); }));
-  renderLoadoutSummary();
-}
-function summaryGearMarkup(rows) {
-  return rows.gearPairs.flat().map((entry) => `<div class="summary-gear-cell ${entry.item ? "" : "empty"}"><span class="summary-slot">${escapeHtml(entry.slot)}</span><span>${entry.item ? officialIconMarkup(entry.hrid, state.catalog, entry.name) : "—"}</span><span class="summary-item-name">${escapeHtml(entry.name || "空")}</span><span class="summary-item-level">${escapeHtml(entry.level)}</span></div>`).join("");
-}
-function summaryAbilityMarkup(rows) {
-  return rows.abilities.map((entry) => `<div class="summary-ability"><span>${escapeHtml(entry.slot)}</span>${officialIconMarkup(entry.hrid, state.catalog, entry.name)}<strong>${escapeHtml(entry.name)}</strong></div>`).join("");
-}
-function renderLoadoutSummary() {
-  const selected = selectedValues("monster-options");
-  const body = selected.map((hrid) => {
-    const result = state.results[LABYRINTH_MONSTER_HRIDS.indexOf(hrid)];
-    if (!result) return `<tr><td class="summary-monster"><strong>${escapeHtml(MONSTER_NAMES[hrid])}</strong><span>等待模拟</span></td><td class="summary-result">—</td><td colspan="2" class="summary-pending">尚无配装结果</td></tr>`;
-    const rows = loadoutRows(result, state.catalog, SLOT_NAMES);
-    return `<tr><td class="summary-monster"><button type="button" class="summary-monster-button" data-summary-hrid="${escapeHtml(hrid)}"><strong>${escapeHtml(result.name)}</strong><span>查看详细报告</span></button></td><td class="summary-result"><strong>${highestMonsterLevelText(result)}</strong><span>${percent(result.finalResult?.clearRate)}${result.rankingIndependent ? ` · 复核${result.finalResult.trials}场` : ""}</span><span>平均耗时 ${seconds(result.finalMetrics?.averageAttemptSeconds)}</span><span>${escapeHtml(resultSearchStatus(result))}</span></td><td><div class="summary-gear-grid">${summaryGearMarkup(rows)}</div></td><td><div class="summary-abilities">${summaryAbilityMarkup(rows)}</div></td></tr>`;
-  }).join("");
-  elements["loadout-summary"].innerHTML = `<table class="loadout-summary-table"><thead><tr><th>怪物</th><th>结果</th><th>装备</th><th>技能</th></tr></thead><tbody>${body}</tbody></table>`;
-  elements["loadout-summary"].querySelectorAll("[data-summary-hrid]").forEach((button) => button.addEventListener("click", () => {
-    state.activeMonster = LABYRINTH_MONSTER_HRIDS.indexOf(button.dataset.summaryHrid);
-    document.getElementById("detail-report").open = true;
-    renderTabs();
-    renderDetail();
-  }));
-}
-function loadoutTile(entry) {
-  if (!entry.item) return `<div class="loadout-tile empty"><div class="loadout-tile-icon">—</div><div class="loadout-tile-copy"><strong>空</strong><small>${escapeHtml(entry.slot)}</small></div></div>`;
-  const twoHand = entry.sourceType === "/equipment_types/two_hand" ? " · 双手武器" : "";
-  return `<div class="loadout-tile"><div class="loadout-tile-icon">${officialIconMarkup(entry.hrid, state.catalog, entry.name)}</div><div class="loadout-tile-copy"><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.slot)}${twoHand} · ${escapeHtml(entry.level)}</small></div></div>`;
-}
-function renderLoadoutChart(result) {
-  const rows = loadoutRows(result, state.catalog, SLOT_NAMES);
-  const gear = rows.gearPairs.flat().map(loadoutTile).join("");
-  const abilities = rows.abilities.map((entry) => `<div class="loadout-tile"><div class="loadout-tile-icon">${officialIconMarkup(entry.hrid, state.catalog, entry.name)}</div><div class="loadout-tile-copy"><strong>${escapeHtml(entry.name)}</strong><small>${escapeHtml(entry.slot)} · ${escapeHtml(entry.level)}</small></div></div>`).join("");
-  return `<section class="loadout-chart"><div class="loadout-chart-heading"><h3>${result.searchComplete === false ? "当前推荐配装" : "推荐配装"}</h3></div><div class="loadout-chart-section"><h4>装备</h4><div class="loadout-chart-grid">${gear}</div></div><div class="loadout-chart-section"><h4>技能顺序</h4><div class="loadout-chart-grid ability-grid">${abilities}</div></div></section>`;
-}
-function selectedRankedResult(result) {
-  const selection = state.resultSelections.get(result.monsterHrid) || { list: "averageTime", rank: 1 };
-  const entry = result.rankings?.[selection.list]?.[selection.rank - 1] || result.rankings?.averageTime?.[0];
-  if (!entry) return { view: result, selection };
-  return {
-    selection,
-    view: {
-      ...result,
-      bestPlan: entry.plan,
-      finalResult: entry.result,
-      finalMetrics: entry.metrics,
-      certificationResult: entry.certificationResult,
-      rankingIndependent: entry.rankingIndependent,
-      targetMet: entry.targetMet,
-      certification: entry.certification,
-      highestMonsterLevel: entry.monsterLevel,
-      highestLevel: entry.monsterLevel,
-      estimatedHighestFloorRange: monsterLevelToFloorRange(entry.monsterLevel),
-    },
-  };
-}
-function rankingControls(result, selection) {
-  const listButton = (key, label) => `<button type="button" class="ranking-button ${selection.list === key ? "active" : ""}" data-ranking-list="${key}">${label}</button>`;
-  const ranks = result.rankings?.[selection.list] || [];
-  return `<div class="ranking-controls"><div>${ranks.length?listButton("averageTime", "平均耗时排名"):"最终胜率未达标，无合格排名"}</div><div>${ranks.map((entry) => `<button type="button" class="ranking-button ${selection.rank === entry.rank ? "active" : ""}" data-ranking-rank="${entry.rank}">第 ${entry.rank} 名</button>`).join("")}</div></div>`;
-}
-function renderDetail() {
-  const result = state.results[state.activeMonster]; if (!result) { elements["monster-detail"].innerHTML = '<div class="empty-result">该怪物尚未完成模拟。</div>'; return; }
-  const { view, selection } = selectedRankedResult(result);
-  const simulation = view.finalResult;
-  const metrics = view.finalMetrics || {};
-  const directionLabel = (entry) => entry?.strategyZh || `${entry.styleZh}${entry.styleHrid === "/combat_styles/magic" ? `·${entry.damageTypeZh}` : "·物理"}`;
-  const directions = result.profile.selectedDirections.map(directionLabel).join(" / ");
-  const chosen = result.chosenDirection ? directionLabel(result.chosenDirection) : "—";
-  const directionMode = result.simulationDirectionMode === "manual" ? `手动·${result.chosenDirection?.presetLabel || chosen}` : "自动最优";
-  const presetStart = view.bestPlan?.sourcePreset ? ` · 起点：${view.bestPlan.sourcePreset}` : "";
-  const incomingStyles = (result.profile.defenseTargets?.incomingStyles || []).map((entry) => entry.zh).join(" / ") || "未知";
-  const incomingDamage = result.profile.defenseTargets?.incomingDamageType?.zh || "未知";
-  const defenseFocus = (result.profile.defenseTargets?.labels || []).join(" / ") || "生命";
-  const specialCore = result.profile.specialStrategy?.coreZh?.length ? ` · 特化核心：${result.profile.specialStrategy.coreZh.join(" / ")}` : "";
-  const counter = Math.max(0, Number(simulation.damageSummary?.counterDamage) || 0);
-  elements["monster-detail"].innerHTML = `${rankingControls(result, selection)}<div class="result-hero"><div><h3>${escapeHtml(result.name)}</h3><div class="weaknesses">弱点：${escapeHtml(directions)} · 模拟：${escapeHtml(directionMode)} · 采用：${escapeHtml(chosen)}${escapeHtml(presetStart)}${escapeHtml(specialCore)}<br>来袭：${escapeHtml(incomingStyles)}·${escapeHtml(incomingDamage)} · 防御：${escapeHtml(defenseFocus)}</div></div><div class="result-score"><strong>${highestMonsterLevelText(view)}</strong><span>${floorRangeText(view.estimatedHighestFloorRange || monsterLevelToFloorRange(view.highestLevel))}</span></div></div><div class="metric-grid"><div class="metric"><span>怪物等级</span><strong>${view.highestLevel}</strong></div><div class="metric"><span>实测胜率</span><strong>${percent(simulation.clearRate)}</strong></div><div class="metric"><span>平均耗时</span><strong>${seconds(metrics.averageAttemptSeconds)}</strong></div></div>${view.staged ? `<p>最终状态：${!view.rankingIndependent ? "未进行顺序复核" : view.certification === "passed" ? "达标" : view.certification === "tolerance" ? "容差保留" : "未达标"}</p>` : ""}${result.rankingEligible===false?"":renderLoadoutChart(view)}<ul class="issue-list">${result.issues.map((issue) => `<li class="${escapeHtml(issue.type)}">${escapeHtml(issue.text)}</li>`).join("")}</ul>`;
-  elements["monster-detail"].querySelectorAll("[data-ranking-list]").forEach((button) => button.addEventListener("click", () => {
-    state.resultSelections.set(result.monsterHrid, { list: button.dataset.rankingList, rank: 1 });
-    renderDetail();
-  }));
-  elements["monster-detail"].querySelectorAll("[data-ranking-rank]").forEach((button) => button.addEventListener("click", () => {
-    state.resultSelections.set(result.monsterHrid, { list: selection.list, rank: Number(button.dataset.rankingRank) });
-    renderDetail();
-  }));
-}
-
-async function runMonster(monsterHrid, index, options, engine, total) {
-  const name = MONSTER_NAMES[monsterHrid];
-  return optimizeMonster({ character: state.character, catalog: state.catalog, engine, monsterHrid, ...options, simulationDirection: options.simulationDirectionsByMonster?.[monsterHrid] || "auto", auditRecorder: state.auditRecorder, seedBase: 20260819 + index * 1000003, signal: state.abortController.signal, onProgress: (progress) => {
-    scheduleProgressStatus(monsterHrid, name, total, progress);
-  } });
-}
-async function runAll(resume = false) {
-  characterEditor.apply();
-  const searchMode = elements['search-mode'].value;
-  state.searchMode = searchMode;
-  const monsterHrids = selectedValues("monster-options"); if (!monsterHrids.length) { elements["run-status"].textContent = "至少选择一个怪物"; return; }
-  const selectedEquipmentTypes = new Set(selectedValues("equipment-options"));
-  const skillValues = selectedValues("skill-options");
-  const minMonsterLevel = Math.max(1, Math.floor(Number(elements["min-monster-level"].value) || 200));
-  const maxMonsterLevel = Math.max(minMonsterLevel, Math.floor(Number(elements["max-monster-level"].value) || 300));
-  elements["min-monster-level"].value = String(minMonsterLevel);
-  elements["max-monster-level"].value = String(maxMonsterLevel);
-  const testTrials = Math.max(10, Math.min(10000, Math.floor(Number(elements["test-trials"].value) || 100)));
-  const reviewTrials = Math.max(10, Math.min(10000, Math.floor(Number(elements["review-trials"].value) || 1000)));
-  const optimizeTrials = Math.max(searchMode === 'learning' ? reviewTrials : 10, Math.min(searchMode === 'learning' ? 100000 : 10000, Math.floor(Number(elements["optimize-trials"].value) || 1000)));
-  elements["test-trials"].value = String(testTrials);
-  elements["review-trials"].value = String(reviewTrials);
-  elements["optimize-trials"].value = String(optimizeTrials);
-  const resourceUtilization = [50, 80, 100].includes(Number(elements["resource-utilization"].value)) ? Number(elements["resource-utilization"].value) : 80;
-  const safeCapacity = recommendedWorkerCount(navigator.hardwareConcurrency, resourceUtilization);
-  const effectiveParallel = Math.min(Number(elements['parallel-count'].value) || 1, monsterHrids.length,
-    searchMode === 'learning' ? Math.max(1, Math.floor(safeCapacity / 2)) : monsterHrids.length);
-  const learningTrainers = 0;
-  const cpuWorkerCount = Math.max(1, safeCapacity - learningTrainers);
-  state.resourceUtilization = resourceUtilization;
-  state.cpuWorkerCount = cpuWorkerCount;
-  const pauseController = createPauseController();
-  const options = { minMonsterLevel, maxMonsterLevel, minimumEquipmentLevel: 80, optimizableEquipmentTypes: selectedEquipmentTypes, equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: structuredClone(state.fixedRules), targetRate: Math.max(0.01, Math.min(0.99, (Number(elements["target-rate"].value) || 70) / 100)), testTrials, reviewTrials, optimizeTrials, rankingTrials: Math.max(10,Math.min(100000,Math.floor(Number(elements["ranking-trials"].value)||5000))), pauseController, resourceUtilization };
-  const storage=await RunStorage.open();
-  options.searchMode = searchMode;
-  options.certificationMonsterCount = monsterHrids.length;
-  if (searchMode === 'learning') {
-    options.learningFamily = await fingerprint({ catalog: state.catalog, combatRuntime: await learningRuntimeFingerprint(),
-      base: buildSimulationInput(state.character, state.catalog, {equipment:{}}, {abilities:[]}),
-      triggers: state.character.abilityCombatTriggersMap || {} });
-  }
-  const settings=captureSettings();
-  settings.characterSourceFingerprint=await fingerprint(state.importedCharacter);
-  const runtime=await runtimeFingerprint();
-  const identity=await fingerprint({character:state.character,catalog:state.catalog,settings,workerCount:cpuWorkerCount,runtime});
-  state.runMetadata={version:"0.51.0",runtimeFingerprint:runtime,settings,monotonicityAssumed:searchMode==="learning",targetRate:options.targetRate};
-  const meta=await storage.begin(identity,settings,resume);
-  const recorder=await (searchMode === 'learning' ? createStagedAudit : createStoredAudit)(storage,{resolveName:hrid=>chineseName(hrid,hrid),onRecord:scheduleAuditStatus});
-  state.storage?.db.close(); state.storage=storage; options.runStorage=storage;
-  state.workEstimator=new WorkEstimator({testTrials,reviewTrials,optimizeTrials,binaryBudget:maximumBinaryProbeCount(minMonsterLevel,maxMonsterLevel)});
-  state.resumeElapsed=resume?meta.elapsed||0:0;
-  clearInterval(state.timingInterval); clearTimeout(state.auditRenderTimer); clearTimeout(state.progressRenderTimer); state.auditRenderTimer = null; state.pendingAuditRecord = null; state.progressRenderTimer = null; state.pendingProgress = null; state.results = []; state.resultSelections = new Map(); state.monsterProgress = new Map(monsterHrids.map((hrid) => [hrid, 0])); state.overallProgress = 0; state.startedAt = new Date().toISOString(); state.runStartedAtMilliseconds = Date.now(); state.pausedAtMilliseconds = 0; state.pausedTotalMilliseconds = 0; state.auditRecorder = recorder; state.abortController = new AbortController(); state.pauseController = pauseController; state.isPaused = false; state.lastRunStatus = ""; state.engines = []; elements["start-button"].disabled = true; elements["pause-button"].hidden = false; elements["pause-button"].textContent = "暂停"; elements["cancel-button"].hidden = false; elements["run-time-status"].hidden = false; elements["progress-track"].hidden = false; elements["progress-bar"].style.width = "0%"; elements["progress-track"].setAttribute("aria-valuenow", "0"); elements["results-section"].hidden = false; state.timingInterval = setInterval(updateRunTiming, 1000); updateRunTiming(); renderAuditStatus(); renderTabs(); renderDetail();
-  state.startedAt=meta.startedAt;
-  state.runStartedAtMilliseconds=Date.now()-state.resumeElapsed;
-  elements['checkpoint-status'].textContent=resume?'已载入断点，正在恢复已保存的探测':'本机断点保存已开启';
-  const saveTimer=setInterval(()=>storage.updateMeta({elapsed:activeRunMilliseconds()}).catch(e=>{setRunningStatus(e.message);elements['checkpoint-status'].textContent=e.message;state.abortController?.abort();state.engines.forEach(e=>e.terminate());}),5000);
-  let completedNormally = false;
-  try {
-    const concurrency = Math.max(1, effectiveParallel); let cursor = 0;
-    for(const hrid of searchMode === 'learning' ? [] : monsterHrids) {
-      checkAbort();setRunningStatus(`正在准备 ${MONSTER_NAMES[hrid]} 的任务数量`);
-      const preview=await previewMonster({...options,character:state.character,catalog:state.catalog,monsterHrid:hrid,
-        simulationDirection:options.simulationDirectionsByMonster[hrid],signal:state.abortController.signal});
-      state.workEstimator.observe(hrid,{phase:'test',totalPlans:preview.count,completedPlans:0,
-        phaseCompletedBatches:0,phaseTotalBatches:preview.count*maximumBinaryProbeCount(minMonsterLevel,maxMonsterLevel)});
-    }
-    const engine = new CombatEngine({ workerCount: cpuWorkerCount, minimumTrialsPerWorker: 2, planScheduling:true });
-    state.engines.push(engine);
-    setRunningStatus(`正在初始化 ${cpuWorkerCount} 个 CPU Worker（${resourceUtilization === 100 ? "安全满载" : `${resourceUtilization}%`}）…`);
-    await engine.initialize(state.catalog);
-    const worker = async () => { while (cursor < monsterHrids.length) { checkAbort(); const position = cursor++; const hrid = monsterHrids[position]; const result = await storage.get(storage.key(`finished/${hrid}`)) || await runMonster(hrid, position, options, engine, monsterHrids.length);
-      if(result.searchComplete !== false) await storage.put(storage.key(`finished/${hrid}`),result); state.workEstimator.finish(hrid); state.results[LABYRINTH_MONSTER_HRIDS.indexOf(hrid)] = result; state.monsterProgress.set(hrid, result.searchComplete === false ? Math.min(.99,result.candidateCounts.resolvedPlans/result.candidateCounts.orderedPlans) : 1); setOverallProgress(Math.min(0.999, searchMode === "learning" ? [...state.monsterProgress.values()].reduce((a,b)=>a+b,0)/monsterHrids.length : state.workEstimator.estimate(activeRunMilliseconds()-(state.resumeElapsed||0),monsterHrids.length)?.progress||0)); state.activeMonster = LABYRINTH_MONSTER_HRIDS.indexOf(hrid); renderTabs(); renderDetail(); } };
-    const tasks=Array.from({length:concurrency},()=>worker().catch(e=>{state.abortController.abort();engine.terminate();throw e;}));
-    const settlements=await Promise.allSettled(tasks);
-    const failure=settlements.find(s=>s.status==='rejected');if(failure)throw failure.reason;
-    completedNormally = state.results.filter(Boolean).every(r=>r.searchComplete!==false); flushAuditStatus(); flushProgressStatus(); if(completedNormally)setOverallProgress(1); setRunningStatus(completedNormally ? `已完成 ${monsterHrids.length} 个怪物的模拟` : "本轮计算已保存，仍有临界方案未确定；点击恢复上次任务追加确认");
-  } catch (error) { const stopped = error.name === "AbortError" || error.message === "模拟已取消"; setRunningStatus(stopped ? "模拟已停止，已完成的结果仍可查看" : `模拟失败：${error.message}`); }
-  finally { clearInterval(saveTimer); await storage.updateMeta({elapsed:activeRunMilliseconds(),complete:completedNormally}).catch(e=>{elements["checkpoint-status"].textContent=e.message;}); finishPausedInterval(); state.isPaused = false; clearInterval(state.timingInterval); state.timingInterval = null; clearTimeout(state.progressRenderTimer); state.progressRenderTimer = null; state.pendingProgress = null; flushAuditStatus(); updateRunTiming(); if (!completedNormally) elements["remaining-time"].textContent = "—"; state.pauseController?.resume(); state.engines.forEach((engine) => engine.terminate()); state.engines = []; state.abortController = null; state.pauseController = null; elements["start-button"].disabled = false; elements["pause-button"].hidden = true; elements["pause-button"].textContent = "暂停"; elements["cancel-button"].hidden = true; }
-}
-const SETTING_IDS=['search-mode','min-monster-level','max-monster-level','target-rate','test-trials','review-trials','optimize-trials','ranking-trials','equipment-preset-source','resource-utilization','parallel-count'];
-function captureSettings() {
-  return {characterEditor:characterEditor.snapshot(),fields:Object.fromEntries(SETTING_IDS.map(id=>[id,elements[id].value])),
-    monsters:selectedValues('monster-options'),equipment:selectedValues('equipment-options'),skills:selectedValues('skill-options'),
-    directions:selectedMonsterDirections(),fixedRules:structuredClone(state.fixedRules)};
-}
-async function restoreSettings(s) {
-  if(s.characterSourceFingerprint && await fingerprint(state.importedCharacter)!==s.characterSourceFingerprint)throw Error('请导入创建该断点时的原始角色文件，再恢复角色修改');
-  characterEditor.restore(s.characterEditor);
-
-  for(const [id,value] of Object.entries(s.fields))if(elements[id])elements[id].value=value;
-  updateSearchLabels();
-  for(const [group,values] of [['monster-options',s.monsters],['equipment-options',s.equipment],['skill-options',s.skills]])
-    document.querySelectorAll(`#${group} input`).forEach(input=>input.checked=values.includes(input.dataset.value));
-  document.querySelectorAll('[data-monster-direction]').forEach(select=>select.value=s.directions[select.dataset.monsterDirection]||'auto');
-  state.fixedRules=structuredClone(s.fixedRules);renderFixedSkillRules(true);
-}
-async function guarded(action) {
-  if(state.busy || state.abortController)return;
-  state.busy=true;
-  for(const id of ['data-panel','scope-panel','settings-panel'])document.getElementById(id).inert=true;
-  const controls=[...document.querySelectorAll('#data-panel input,#scope-panel input,#scope-panel select,#scope-panel button,#settings-panel input,#settings-panel select,#preview-button,#resume-button,#start-button')];
-  const disabled=controls.map(el=>el.disabled);controls.forEach(el=>el.disabled=true);
-  try {
-    if(!navigator.locks)throw new Error('浏览器版本不支持安全任务锁，请更新浏览器后运行');
-    await navigator.locks.request('mwi-v039-task',{ifAvailable:true},async lock=>{
-      if(!lock)throw new Error('另一个页面正在处理此模拟器任务，请先暂停并停止该页面任务');
-      await action();
-    });
-  } catch(e){elements['run-status'].textContent=e.message;}
-  finally {state.busy=false;for(const id of ['data-panel','scope-panel','settings-panel'])document.getElementById(id).inert=false;controls.forEach((el,i)=>el.disabled=disabled[i]);}
-}
-function updateSearchLabels() {
-  const learning = elements['search-mode'].value === 'learning';
-  document.getElementById('test-trials-label').textContent = learning ? '粗筛场数' : '测试次数';
-  document.getElementById('review-trials-label').textContent = learning ? '每等级场数／临界追加' : '复核次数';
-  elements['ranking-trials'].closest('label').hidden = !learning;
-  document.getElementById('optimize-trials-label').textContent = learning ? '独立纪录确认场数' : '优化次数';
-  elements['start-button'].textContent = learning ? '开始阶段搜索' : '开始全量模拟';
-}
-elements['search-mode'].addEventListener('change', () => {
-  elements['optimize-trials'].value = elements['search-mode'].value === 'learning' ? '1000' : '500';
-  updateSearchLabels();
-});
-elements['export-learning'].addEventListener('click', () => guarded(async () => {
-  const store = await RunStorage.open();
-  try {
-    if (window.showSaveFilePicker) {
-      const handle = await window.showSaveFilePicker({ suggestedName: 'mwi-learning-v051.jsonl', types: [{ description: '历史学习档案', accept: { 'application/json': ['.jsonl'] } }] });
-      const writable = await handle.createWritable();
-      try { await exportLearning(store, writable); await writable.close(); } catch (e) { await writable.abort(); throw e; }
-    } else {
-      const chunks = []; let buffer = '';
-      await exportLearning(store, { async write(p) { buffer += p; if (buffer.length > 262144) { chunks.push(new Blob([buffer])); buffer = ''; } } });
-      chunks.push(new Blob([buffer])); downloadBlob(new Blob(chunks, {type:'application/json'}), 'mwi-learning-v051.jsonl');
-    }
-    elements['learning-status'].textContent = '历史学习档案已导出';
-  } finally { store.db.close(); }
-}));
-elements['import-learning'].addEventListener('change', () => {
-  const file = elements['import-learning'].files[0]; if (!file) return;
-  guarded(async () => {
-    const store = await RunStorage.open();
-    try {
-      elements['learning-status'].textContent = '正在校验并导入';
-      const result = await importLearning(store, file);
-      elements['learning-status'].textContent = `导入 ${result.imported} 批 · 跳过重复 ${result.duplicates} 批`;
-    } finally { store.db.close(); elements['import-learning'].value = ''; }
-  });
-});
-elements['start-button'].addEventListener('click',()=>guarded(()=>runAll(false)));
-elements['resume-button'].addEventListener('click',()=>guarded(async()=>{
-  const store=await RunStorage.open();const saved=await store.get('latest');store.db.close();
-  if(!saved)throw new Error('没有可恢复的任务');
-  await restoreSettings(saved.settings);await runAll(true);
-}));
-elements['preview-button'].addEventListener('click',()=>guarded(async()=>{
-  characterEditor.apply();
-  const monsters=selectedValues('monster-options');
-  if(!monsters.length)throw new Error('至少选择一个怪物');
-  elements['candidate-panel'].hidden=false;elements['candidate-panel'].open=true;elements['candidate-preview'].innerHTML='';
-  const entryName=e=>`${chineseName(e.hrid,e.name||e.hrid)}${e.enhancementLevel!=null?` +${e.enhancementLevel}`:` Lv.${e.level||1}`}`;
-  for(const hrid of monsters){
-    elements['run-status'].textContent=`正在整理 ${MONSTER_NAMES[hrid]} 的候选`;
-    const p=await previewMonster({character:state.character,catalog:state.catalog,monsterHrid:hrid,
-      simulationDirection:selectedMonsterDirections()[hrid],equipmentPresetSource:elements['equipment-preset-source'].value,
-      optimizableEquipmentTypes:new Set(selectedValues('equipment-options')),fixedAbilityRules:state.fixedRules,
-      optimizeAura:selectedValues('skill-options').includes('aura'),optimizeActives:selectedValues('skill-options').includes('active')});
-    const rows=Object.entries(p.usedEquipment).map(([slot,items])=>`<tr><td>${escapeHtml(SLOT_NAMES[slot]||slot)}</td><td>${items.map(e=>escapeHtml(entryName(e))+'（'+(!(selectedValues('equipment-options').includes(slot)||(slot==='/equipment_types/two_hand'&&selectedValues('equipment-options').includes('/equipment_types/main_hand')))?'预设固定':'预设／白名单')+'）').join('、')}</td></tr>`).join('');
-    const fixed=p.baselines.map(b=>`<details><summary>${escapeHtml(b.sourcePreset||'预设')} · 起点与固定栏位</summary><ul>${Object.entries(b.equipment).map(([slot,e])=>`<li>${escapeHtml(SLOT_NAMES[slot]||slot)}：${escapeHtml(entryName(e))} · ${selectedValues('equipment-options').includes(slot)?'参与组合':'固定/预设'} </li>`).join('')}</ul></details>`).join('');
-    const budget=maximumBinaryProbeCount(Number(elements['min-monster-level'].value),Number(elements['max-monster-level'].value));
-    elements['candidate-preview'].insertAdjacentHTML('beforeend',`<details open><summary>${escapeHtml(MONSTER_NAMES[hrid])} · ${p.count.toLocaleString()} 套</summary><div class="preview-scroll"><table><tbody>${rows}</tbody></table></div><p>特殊：${p.usedAuras.map(e=>escapeHtml(entryName(e))).join('、')}</p><p>主动：${p.usedActives.map(e=>escapeHtml(entryName(e))).join('、')}</p><p>防御依据：${escapeHtml(p.profile.defenseTargets?.labels?.join('、'))}</p>${elements['search-mode'].value === 'learning' ? `<p>前期按装备与技能集合搜索；入围后再展开全部合法顺序。</p>` : `<p>测试最多 ${(p.count*budget*Number(elements['test-trials'].value)).toLocaleString()} 场 · 复核最多 ${(p.count*budget*Number(elements['review-trials'].value)).toLocaleString()} 场 · 优化最多 ${(120*Number(elements['optimize-trials'].value)).toLocaleString()} 场</p>`}${fixed}</details>`);
-  }
-  elements['run-status'].textContent='候选预览完成';
-}));
-RunStorage.open().then(async store=>{const m=await store.get('latest');store.db.close();if(m)elements['checkpoint-status'].textContent=`上次任务：${new Date(m.startedAt).toLocaleString()} · ${m.complete?'已完成':'可恢复'}`;}).catch(()=>{});
-elements["pause-button"].addEventListener("click", () => {
-  if (!state.pauseController) return;
-  if (state.pauseController.paused) {
-    finishPausedInterval();
-    state.isPaused = false;
-    state.pauseController.resume();
-    elements["pause-button"].textContent = "暂停";
-    elements["run-status"].textContent = state.lastRunStatus || "继续模拟";
-  } else {
-    state.pauseController.pause();
-    state.isPaused = true;
-    state.pausedAtMilliseconds = Date.now();
-    elements["pause-button"].textContent = "继续";
-    elements["run-status"].textContent = `已暂停 · ${state.lastRunStatus || "等待当前批次结束"}`;
-  }
-});
-elements["cancel-button"].addEventListener("click", () => { state.abortController?.abort(); state.engines.forEach((engine) => engine.terminate()); });
-elements["export-button"].addEventListener("click", () => {
-  const skillValues = selectedValues("skill-options");
-  const payload = { searchMode: state.searchMode, reportType: "mwi_labyrinth_exhaustive_search_v051", gameVersion: state.catalog?.gameVersion, startedAt: state.startedAt, exportedAt: new Date().toISOString(), selectedMonsters: selectedValues("monster-options"), selectedEquipmentTypes: selectedValues("equipment-options"), equipmentPresetSource: elements["equipment-preset-source"].value, simulationDirectionsByMonster: selectedMonsterDirections(), optimizeAura: skillValues.includes("aura"), optimizeActives: skillValues.includes("active"), fixedAbilityRules: state.fixedRules, levelBounds: { minimum: Number(elements["min-monster-level"].value), maximum: Number(elements["max-monster-level"].value) }, phaseTrials: { test: Number(elements["test-trials"].value), review: Number(elements["review-trials"].value), optimize: Number(elements["optimize-trials"].value) }, parallelCount: Number(elements["parallel-count"].value), resourceUtilization: state.resourceUtilization, cpuWorkerCount: state.cpuWorkerCount, simulationAuditSummary: state.auditRecorder?.summary() || null, searchPolicy: { weaknessOrder: "保留完整弱点分析；自动最优只模拟第一弱点", simulationDirectionPolicy: "每只怪独立选择自动最优或九套系统预设方向；手动方向强制使用对应系统预设", minimumCombatEquipmentRequirement: 80, equipmentVariantPreference: "系统预设同一装备族按实际强化后属性择优；其余候选同族先取强化最高，强化相同优先精炼", equipmentPresetSource: elements["equipment-preset-source"].value, targetedDefenseComparison: "同槽分别只取对应闪避、护甲/元素抗性、生命的最高装备；跨属性去重，保留并列最高", weaponStates: "九套预设武器默认固定；勾选主手可解除；只勾选副手时单手预设搜索副手，双手预设保持固定", levelOneActiveFilter: "除对应元素魔法0CD外，能力书战斗需求等级1的主动技能排除", skillSetBeforeOrder: state.searchMode !== "learning", uniqueWithinStage: true, parallelPlanPipelines: true, testReviewBinarySearch: state.searchMode !== "learning", reviewTolerance: 0.01, safeDynamicRetention: state.searchMode !== "learning", finalists: 5, leaderboards: ["averageAttemptSeconds"], failurePenaltySeconds:120, finalTargetRequired:true }, results: state.results };
-  if (state.searchMode === 'learning') {
-    payload.reportType = 'mwi_labyrinth_learning_search_v051';
-    delete payload.searchPolicy.reviewTolerance;
-    delete payload.searchPolicy.finalists;
-    payload.searchPolicy.globalOptimalityProven = false;
-    payload.searchPolicy.certificationConfidence = null;
-    payload.searchPolicy.coarseOneSidedConfidence = .95;
-    payload.searchPolicy.reviewTolerance = .01;
-    payload.searchPolicy.skillSetBeforeOrder = true;
-    payload.searchPolicy.equipmentVariantPreference = "每个预设原件与四部位白名单；替代同族按强化后属性选择一个版本";
-    payload.searchPolicy.targetedDefenseComparison = "不再追加防御极值装备";
-    payload.searchPolicy.weaponStates = "预设武器固定";
-    payload.searchPolicy.independentValidation = true;
-    payload.searchPolicy.monotonicityAssumedForElimination = true;
-    payload.searchPolicy.fullOrderedCandidateCoverage = false;
-    payload.searchPolicy.finalistAllLegalOrders = true;
-    payload.searchPolicy.confidenceMethod = '单次精确二项粗筛；经验升阶与独立确认；最终样本Wilson区间';
-    payload.searchPolicy.uniqueWithinStage = '同一配装等级可追加独立随机样本；同一已保存批次不重复计数';
-    payload.phaseTrials = { coarse: Number(elements['test-trials'].value), perLevelAndBoundary: Number(elements['review-trials'].value), independentRecordConfirmation: Number(elements['optimize-trials'].value), finalOrderRanking: Number(elements['ranking-trials'].value) };
-  }
-  payload.runtime = state.runMetadata;
-  downloadJson(payload, `mwi迷宫模拟报告-v051-${new Date().toISOString().slice(0, 10)}.json`);
-});
-elements['export-audit-button'].addEventListener('click',async()=>{
-  if(!state.auditRecorder?.recordCount)return;
-  elements['export-audit-button'].disabled=true;
+function restore(s){for(const[id,v]of Object.entries(s.fields))if($(id))$(id).value=v;$('monster-options').querySelectorAll('input').forEach(e=>e.checked=s.monsters.includes(e.value));$('equipment-options').querySelectorAll('input').forEach(e=>e.checked=s.equipment.includes(e.value));document.querySelectorAll('[data-direction]').forEach(e=>e.value=s.directions[e.dataset.direction]);$('aura').checked=s.aura;$('active').checked=s.active;state.rules=structuredClone(s.rules);editor.restore(s.characterEditor);renderRules();updateScope();}
+function options(s,id){return {character:state.character,catalog:state.catalog,monsterHrid:id,simulationDirection:s.directions[id],equipmentPresetSource:s.fields.preset,
+ selectedEquipmentTypes:s.equipment,optimizableEquipmentTypes:s.equipment,optimizeAura:s.aura,optimizeActives:s.active,fixedAbilityRules:s.rules,minimumEquipmentLevel:80,
+ minMonsterLevel:Number(s.fields.minimum),maxMonsterLevel:Number(s.fields.maximum),targetRate:Number(s.fields.target)/100,testTrials:Number(s.fields['screen-trials']),reviewTrials:Number(s.fields['level-trials']),rankingTrials:Number(s.fields['final-trials'])};}
+function download(data,label){const url=URL.createObjectURL(new Blob([JSON.stringify(data)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=label;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+let lastProgress=0;
+async function run(resume){
+ if(state.busy)return;editor.apply();state.busy=true;$('configuration').inert=true;ready();let store,s;
+ try{
+  store=await RunStorage.open();
+  if(resume){const saved=await store.get('latest');if(!saved||saved.settings?.version!==52)throw Error('没有可恢复的052任务');if(await fingerprint(state.source)!==saved.settings.sourceFingerprint)throw Error('请导入原始角色数据');restore(saved.settings);}
+  editor.apply();s=settings();if(!s.monsters.length)throw Error('请选择怪物');
+  const coverage=compareCharacterToCatalog(state.character,state.catalog);if(coverage.warnings.length)$('data-status').textContent=coverage.warnings.join('；');
+  s.version=52;s.sourceFingerprint=await fingerprint(state.source);const workers=recommendedWorkerCount(navigator.hardwareConcurrency,s.fields.resource);
+  const identity=await fingerprint({character:state.character,catalog:state.catalog,settings:s,workers,runtime:await runtimeFingerprint()});
+  const meta=await store.begin(identity,s,resume);state.store?.db.close();state.store=store;state.busy=true;state.controller=new AbortController();state.pause=createPauseController();resetResults();
+  $('configuration').inert=true;ready();$('pause').hidden=false;$('stop').hidden=false;$('progress').hidden=false;$('progress').value=0;
+  const start=Date.now(),elapsed=resume?meta.elapsed||0:0;const timer=setInterval(()=>{$('run-time').textContent=`运行 ${Math.floor((Date.now()-start+elapsed)/1000)}秒`;},1000);
   try{
-    const extra={gameVersion:state.catalog.gameVersion,startedAt:state.startedAt,...state.runMetadata};
-    if(window.showSaveFilePicker && state.auditRecorder.exportTo){
-      const handle=await window.showSaveFilePicker({suggestedName:'mwi模拟审计日志-v051.json',types:[{description:'JSON',accept:{'application/json':['.json']}}]});
-      const writable=await handle.createWritable();
-      try{await state.auditRecorder.exportTo(writable,extra);await writable.close();}catch(e){await writable.abort();throw e;}
-    }else downloadBlob(await state.auditRecorder.exportBlob(extra),'mwi模拟审计日志-v051.json');
-  }catch(e){if(e.name!=='AbortError')elements['run-status'].textContent='导出失败：'+e.message;}
-  finally{elements['export-audit-button'].disabled=false;}
+   state.engine=new CombatEngine({workerCount:workers,planScheduling:true});await state.engine.initialize(state.catalog);
+   for(let i=0;i<s.monsters.length;i++){
+    const id=s.monsters[i],o=options(s,id),profile=classifyMonster(state.catalog.combatMonsterDetailMap[id],{roomLevel:100,playerCombatDetails:state.character.combatDetails});
+    const direction=resolveSimulationDirections(profile,o.simulationDirection)[0];const prepared=prepareDirection({...o,direction,profile:directionProfile(profile,direction)});
+    const output=await searchExploration({...o,iterate:prepared.iterate,engine:state.engine,runStorage:store,signal:state.controller.signal,pauseController:state.pause,
+     onProgress:p=>{if(Date.now()-lastProgress<200&&p.phase!=='complete')return;lastProgress=Date.now();const part=p.phase==='index'?0:p.phase==='search'?.05+.55*p.done/Math.max(1,p.total):p.phase==='review'?.6+.4*p.done/Math.max(1,p.total):1;
+      $('progress').value=(i+part)/s.monsters.length;status(`${name(id)} · ${{index:'整理候选',search:'等级搜索',review:'方案复核',complete:'完成'}[p.phase]} ${p.done}/${p.total}`);}});
+    state.results.push({...output,name:name(id),direction});state.selected=state.results.length-1;state.point=0;renderResults();
+   }
+   await store.updateMeta({complete:true});status('模拟完成');
+  }finally{clearInterval(timer);state.engine?.terminate();state.engine=null;await store.updateMeta({elapsed:elapsed+Date.now()-start});}
+ }catch(e){if(store&&state.store!==store)store.db.close();throw e;}
+ finally{state.busy=false;state.controller=null;$('configuration').inert=false;$('pause').hidden=true;$('stop').hidden=true;$('pause').textContent='暂停';for(const id of ['start','resume','preview'])$(id).disabled=!(state.character&&state.catalog);}
+}
+$('start').onclick=guarded(()=>run(false));$('resume').onclick=guarded(()=>run(true));
+$('pause').onclick=()=>{if(!state.pause)return;if(state.pause.paused){state.pause.resume();$('pause').textContent='暂停';}else{state.pause.pause();$('pause').textContent='继续';}};
+$('stop').onclick=()=>{state.controller?.abort();state.engine?.terminate();};
+$('preview').onclick=guarded(async()=>{editor.apply();const s=settings();if(!s.monsters.length)throw Error('请选择怪物');state.busy=true;$('configuration').inert=true;ready();try{$('preview-panel').hidden=false;$('preview-panel').textContent='正在整理候选';let html='';for(const id of s.monsters){const p=await previewMonster(options(s,id));html+=`<p>${esc(name(id))}：${p.count}套</p>`;}$('preview-panel').innerHTML=html;}finally{state.busy=false;$('configuration').inert=false;ready();}});
+function renderResults(){
+ $('results').hidden=false;$('result-tabs').innerHTML=state.results.map((r,i)=>`<button data-result="${i}" class="${i===state.selected?'active':''}">${esc(r.name)}</button>`).join('');
+ const r=state.results[state.selected];if(!r)return;
+ if(!r.frontier.length){$('result-body').innerHTML='<p>设置等级范围内没有最终达标方案。</p>';return;}
+ state.point=Math.min(state.point,r.frontier.length-1);const p=r.frontier[state.point];
+ const table=`<div class="table-scroll"><table><thead><tr><th>建议等级</th><th>房间通过概率</th><th>房间平均耗时</th><th>单场胜率</th></tr></thead><tbody>${r.frontier.map((x,i)=>`<tr tabindex="0" role="button" data-point="${i}" class="${i===state.point?'selected':''}"><td>${x.level}</td><td>${pct(x.metrics.roomPassRate)}</td><td>${seconds(x.metrics.averageRoomSeconds)}</td><td>${pct(x.metrics.singleWinRate)}</td></tr>`).join('')}</tbody></table></div>`;
+ const gear=Object.entries(p.plan.equipmentCandidate.equipment).map(([slot,v])=>`<div><span>${SLOT_LABELS[slot.split('/').pop()]||'装备'}</span><span>${esc(name(v.hrid))} +${v.enhancementLevel}</span></div>`).join('');
+ const abilities=p.plan.abilityOrder.abilities.map(a=>esc(name(a.hrid))).join(' → ');
+ $('result-body').innerHTML=table+`<div class="loadout">${gear}</div><p>${abilities}</p>`;
+}
+$('result-tabs').onclick=e=>{if(e.target.dataset.result!==undefined){state.selected=Number(e.target.dataset.result);state.point=0;renderResults();}};
+$('result-body').onclick=e=>{const row=e.target.closest('[data-point]');if(row){state.point=Number(row.dataset.point);renderResults();}};
+$('result-body').onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target.dataset.point!==undefined){e.preventDefault();state.point=Number(e.target.dataset.point);renderResults();}};
+$('export').onclick=()=>download({version:52,attemptLimit:2,failurePenaltySeconds:120,results:state.results},'迷宫模拟结果-v052.json');
+$('audit').onclick=guarded(async()=>{
+ if(!state.store)return;const parts=[];let buffer='{"version":52,"attemptLimit":2,"rows":[',comma='';
+ for await(const [key,value]of state.store.entries(state.store.key('explore/'))){buffer+=comma+JSON.stringify({key:key.slice(state.store.id.length+1),value});comma=',';if(buffer.length>=262144){parts.push(new Blob([buffer]));buffer='';}}
+ parts.push(buffer+']}');const url=URL.createObjectURL(new Blob(parts,{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='迷宫模拟明细-v052.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
-  elements["export-loadout-button"].addEventListener("click", async () => { try { const ok = await downloadLoadouts(state.results, state.catalog, SLOT_NAMES, MONSTER_NAMES); elements["run-status"].textContent = ok ? "已导出全部怪物配装总表" : "尚无已完成的方案可导出"; } catch (error) { elements["run-status"].textContent = `配装总表导出失败：${error.message}`; } });
-document.getElementById('clear-saved-button').addEventListener('click',()=>guarded(async()=>{
-  if(!window.confirm('清除本浏览器中本模拟器保存的全部任务、断点、学习模型、战斗历史学习档案和审计记录？请先导出需要保留的档案。此操作无法恢复。'))return;
-  const store=await RunStorage.open();await store.clearAll();store.db.close();
-  state.auditRecorder=null;elements['export-audit-button'].disabled=true;
-  elements['checkpoint-status'].textContent='本机任务记录已清除';elements['learning-status'].textContent='本机历史学习档案已清除';elements['audit-status'].hidden=true;
-}));
+$('clear').onclick=guarded(async()=>{if(state.busy)throw Error('请先停止模拟');const store=await RunStorage.open();try{await store.clearAll();}finally{store.db.close();}resetResults();status('本机任务已清除');});
+if(['127.0.0.1','localhost'].includes(location.hostname))setInterval(async()=>{if(state.busy||editor.hasEdits())return;try{const response=await fetch(`/api/data?since=${state.bridgeRevision}`,{cache:'no-store'});if(!response.ok)return;const data=await response.json();if(data.unchanged)return;state.bridgeRevision=data.revision;if(data.client)loadCatalog(data.client);if(data.character)loadCharacter(data.character);}catch{}},2000);

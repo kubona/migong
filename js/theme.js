@@ -21,7 +21,7 @@
     if (!button) return;
     const nextTheme = theme === "dark" ? "light" : "dark";
     const nextLabel = nextTheme === "light" ? "明亮" : "暗色";
-    button.innerHTML = `<span aria-hidden="true">${nextTheme === "light" ? "☀" : "☾"}</span><span>${nextLabel}</span>`;
+    button.textContent = nextLabel;
     button.setAttribute("aria-label", `切换为${nextLabel}主题`);
     button.title = `切换为${nextLabel}主题`;
   }

@@ -108,22 +108,7 @@ export class RunStorage {
   }
 }
 
-export async function runtimeFingerprint() {
-  const paths = ['engine/src_worker_js.bundle.js', 'engine/vendors-heap.bundle.js',
-    ...['exhaustive-optimizer','component-planner','engine-adapter','player-dto','classifier','equipment-presets',
-      'ability-selection-rules','data-model','fixed-skill-options','result-retention','stored-audit','run-storage','statistics','app',
-      'character-editor','character-editor-model','distinct-ranking','staged-diagnostics','staged-search','staged-audit','staged-statistics','learning-optimizer','ranking-review','result-status','competitive-search','learning-library','learning-model','learning-worker','sequential-confidence','optimizer'].map(n => `js/${n}.js`)];
-  return fingerprint(await Promise.all(paths.map(async path => {
-    const response = await fetch(path);
-    if (!response.ok) throw new Error(`无法核对计算文件：${path}`);
-    return [path, await fingerprint(await response.text())];
-  })));
-}
-
-export async function learningRuntimeFingerprint() {
-  const paths = ['engine/src_worker_js.bundle.js', 'engine/vendors-heap.bundle.js', 'js/engine-adapter.js', 'js/player-dto.js', 'js/learning-model.js'];
-  return fingerprint(await Promise.all(paths.map(async path => {
-    const response = await fetch(path); if (!response.ok) throw new Error(`无法核对战斗文件：${path}`);
-    return [path, await fingerprint(await response.text())];
-  })));
+export async function runtimeFingerprint(){
+ const files=await fetch('./runtime-files.json').then(r=>r.json());
+ return fingerprint(await Promise.all(files.map(async p=>{const r=await fetch(p);if(!r.ok)throw Error('运行文件读取失败');return [p,await fingerprint(await r.text())];})));
 }

@@ -68,10 +68,10 @@ export function applyCharacterDraft(base,draft,catalog){
   if(c.equipmentOverrides['/equipment_types/two_hand']&&(c.equipmentOverrides['/equipment_types/main_hand']||c.equipmentOverrides['/equipment_types/off_hand']))throw Error('双手武器不能同时配置主手或副手覆盖；请将冲突部位设为跟随预设');
   c.buffs={};
   for(const group of Object.keys(BUFF_GROUPS))c.buffs[group]=(draft.buffs[group]||[]).map((buff,index)=>{
-    if(!catalog.buffTypeDetailMap?.[buff.typeHrid])throw Error('Buff 类型不存在');
+    if(!catalog.buffTypeDetailMap?.[buff.typeHrid])throw Error('增益类型不存在');
     const out={...buff,uniqueHrid:buff.uniqueHrid||`/buff_uniques/editor_${group}_${index}`};
-    for(const k of ['ratioBoost','ratioBoostLevelBonus','flatBoost','flatBoostLevelBonus'])out[k]=numeric(buff[k]??0,'Buff 加成',-10000,10000);
-    out.duration=numeric(buff.duration??0,'Buff 持续时间',0,Number.MAX_SAFE_INTEGER);
+    for(const k of ['ratioBoost','ratioBoostLevelBonus','flatBoost','flatBoostLevelBonus'])out[k]=numeric(buff[k]??0,'增益加成',-10000,10000);
+    out.duration=numeric(buff.duration??0,'增益持续时间',0,Number.MAX_SAFE_INTEGER);
     return out;
   });
   for(const k of Object.keys(UPGRADES))c.characterInfo[k]=numeric(draft.upgrades[k],'迷宫升级',0,10000,true);
