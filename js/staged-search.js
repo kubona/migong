@@ -5,7 +5,7 @@ import {fingerprint} from './run-storage.js';
 import {LearningLibrary,batchSeed,normalizeEvidence} from './learning-library.js';
 import {buildSimulationInput} from './player-dto.js';
 import {mergeRoomResults} from './engine-adapter.js';
-import {wilsonInterval} from './statistics.js';
+import {averageAttemptSeconds,compareAverageTime,meetsFinalTarget,wilsonInterval} from './statistics.js';
 import {coarseRejected,stageStatus,needsBoundaryRetest} from './staged-statistics.js';
 
 const pad = n => String(n).padStart(12,'0');
@@ -189,10 +189,8 @@ export async function searchStagedCandidates(o) {
     s.pending=tasks;await save();await execute();
   }
   await pruneOldFinalists();
-  const rankings={winRate:[],speed:[]};
+  const rankings={averageTime:[]};let reviewFallback=null;
   const retain=retainDistinctRanking;
-  const winCompare=(a,b)=>b.result.clearRate-a.result.clearRate||a.result.averageClearSeconds-b.result.averageClearSeconds||a.plan.key.localeCompare(b.plan.key);
-  const speedCompare=(a,b)=>a.result.averageClearSeconds-b.result.averageClearSeconds||b.result.clearRate-a.result.clearRate||a.plan.key.localeCompare(b.plan.key);
   if(s.bestLevel!==null) {
     let total=0;
     for await(const c of store.values(`${root}/candidate/`))if(keep(c))total+=activeOrderPermutations(c.plan).length;
@@ -217,19 +215,19 @@ export async function searchStagedCandidates(o) {
             if(!o.auditRecorder?.persistsCompletedBatches)await store.put(cache(task.offset),batch);
           }
           row.result=clean(row.result?mergeRoomResults([row.result,batch]):batch);row.pending=null;
-          row.status=stageStatus(row.result,target);row.interval=wilsonInterval(row.result.successes,row.result.trials);
+          row.averageAttemptSeconds=averageAttemptSeconds(row.result);row.status=stageStatus(row.result,target);row.interval=wilsonInterval(row.result.successes,row.result.trials);
           await store.mutate([[key,row]],[cache(task.offset)]);
           progress({phase:'ranking',level:s.bestLevel,rankingCompleted:s.rankingReviewed,rankingTotal:total,rankingTrials,
             currentOrderTrials:row.result.trials,reason:'技能顺序独立排名'});
         }
         const entry={plan,level:s.bestLevel,result:row.result,status:row.status,rankingIndependent:true,
           certificationResult:{...c.levels[s.bestLevel].result,interval:c.levels[s.bestLevel].interval},interval:row.interval};
-        retain(rankings.winRate,entry,winCompare);
-        if(row.status==='passed'&&row.result.successes>0)retain(rankings.speed,entry,speedCompare);
+        if(!reviewFallback||compareAverageTime(entry,reviewFallback)<0)reviewFallback=entry;
+        if(meetsFinalTarget(row.result,target))retain(rankings.averageTime,entry,compareAverageTime);
         s.rankingReviewed++;await save();
       }
     }
   }
   s.phase='complete';await save();progress();
-  return {state:s,rankings,fallback:s.fallback,minimum,maximum,target,root,rankingTrials};
+  return {state:s,rankings,fallback:reviewFallback||s.fallback,minimum,maximum,target,root,rankingTrials};
 }

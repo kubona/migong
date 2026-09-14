@@ -1,3 +1,4 @@
+import {averageAttemptSeconds,compareAverageTime,meetsFinalTarget} from './statistics.js';
 import {distinctRanking} from './distinct-ranking.js';
 import { finiteNumber, monsterLevelToFloorRange } from "./data-model.js";
 import { classifyMonster } from "./classifier.js";
@@ -131,6 +132,7 @@ export function resultMetrics(result) {
     robustSuccessUpper: result?.interval?.upper || 1,
     deathRate: finiteNumber(result?.failedByDeath, 0) / trials,
     timeoutRate: finiteNumber(result?.failedByTimeout, 0) / trials,
+    averageAttemptSeconds: averageAttemptSeconds(result),
     expectedSecondsPerClear: result?.successes > 0 ? totalSeconds / result.successes : Infinity,
     damagePerSecond: totalSeconds > 0 ? totalDamage / totalSeconds : 0,
   };
@@ -470,8 +472,8 @@ async function runDirectionWorkflow(options) {
     options.onProgress?.({ phase: "optimize", direction: options.direction, completedPlans: optimizeCompletedPlans, totalPlans: orderedPlans.length, currentPlan: index + 1, level: optimizationLevel, phaseCompletedBatches: optimizeCompletedPlans, phaseTotalBatches: orderedPlans.length, phaseComplete: optimizeCompletedPlans === orderedPlans.length });
     return { plan, result, metrics: resultMetrics(result), monsterLevel: optimizationLevel, direction: options.direction };
   });
-  const winRateRanking = withRank(distinctRanking(optimized,compareWinRate));
-  const speedRanking = withRank(distinctRanking(optimized,compareSpeed));
+  const averageTimeRanking = withRank(distinctRanking(optimized.filter(e=>meetsFinalTarget(e.result,options.targetRate||.7)),compareAverageTime));
+  const fallback=optimized.slice().sort(compareAverageTime)[0];
   return {
     direction: options.direction,
     profile: options.profile,
@@ -488,7 +490,7 @@ async function runDirectionWorkflow(options) {
     searchCapped: finalists.some((entry) => entry.capped),
     optimizationLevel,
     orderedPlanCount: orderedPlans.length,
-    rankings: { winRate: winRateRanking, speed: speedRanking },
+    rankings: { averageTime: averageTimeRanking },fallback,
   };
 }
 
@@ -556,9 +558,9 @@ export async function optimizeMonsterExhaustive(options) {
     directionResults.push(workflow);
   }
   directionResults.sort((left, right) => finiteNumber(right.optimizationLevel, 0) - finiteNumber(left.optimizationLevel, 0)
-    || compareWinRate(left.rankings.winRate[0], right.rankings.winRate[0]));
+    || compareAverageTime(left.rankings.averageTime[0]||left.fallback, right.rankings.averageTime[0]||right.fallback));
   const winner = directionResults[0];
-  const best = winner?.rankings?.winRate?.[0];
+  const best = winner?.rankings?.averageTime?.[0]||winner?.fallback;
   if (!winner || !best) throw new Error(`${fullProfile.name} 没有生成可运行的最终方案`);
   const testProbes = directionResults.reduce((sum, entry) => sum + entry.testProbeCount, 0);
   const reviewProbes = directionResults.reduce((sum, entry) => sum + entry.reviewProbeCount, 0);
@@ -584,7 +586,7 @@ export async function optimizeMonsterExhaustive(options) {
     bestPlan: best.plan,
     finalResult: best.result,
     finalMetrics: best.metrics,
-    rankings: winner.rankings,
+    rankings: winner.rankings,rankingEligible:winner.rankings.averageTime.length>0,
     directionWorkflows: directionResults.map((entry) => ({
       direction: entry.direction,
       rankings: entry.rankings,

@@ -16,9 +16,8 @@ export async function optimizeMonsterLearning(o){
  const convert=(e,i)=>({plan:e.plan,result:e.result,certificationResult:e.certificationResult,rankingIndependent:!!e.rankingIndependent,
    metrics:{...resultMetrics(e.result),robustSuccessLower:wilsonInterval(e.result.successes,e.result.trials).lower},
    monsterLevel:e.level,direction,targetMet:e.status==='passed',certification:e.status,rank:i+1});
- const rankings={winRate:run.rankings.winRate.map(convert),speed:run.rankings.speed.map(convert)};
- if(!rankings.winRate.length&&run.fallback)rankings.winRate=[convert(run.fallback,0)];
- const best=rankings.winRate[0];
+ const rankings={averageTime:run.rankings.averageTime.map(convert)};
+ const best=rankings.averageTime[0]||(run.fallback?convert(run.fallback,0):null);
  if(!best)throw Error('没有可展示的战斗结果');
  const level=s.bestLevel??best.monsterLevel,targetMet=best.targetMet&&best.rankingIndependent;
  return {monsterHrid:o.monsterHrid,name:profile.name,profile,chosenDirection:direction,
@@ -27,14 +26,14 @@ export async function optimizeMonsterLearning(o){
    estimatedHighestFloorRange:monsterLevelToFloorRange(level),targetMet,searchHighestLevel:s.bestLevel,
    searchCapped:s.bestLevel===run.maximum,bestPlan:best.plan,finalResult:best.result,finalMetrics:best.metrics,
    certificationResult:best.certificationResult,rankingIndependent:best.rankingIndependent,
-   rankingReview:{trials:s.rankingTrials,candidates:s.rankingReviewed},rankings,learning:true,staged:true,
+   rankingEligible:rankings.averageTime.length>0,rankingReview:{trials:s.rankingTrials,candidates:s.rankingReviewed},rankings,learning:true,staged:true,
    searchComplete:s.phase==='complete',possibleHighestLevel:null,certification:best.certification,
    directionWorkflows:[{direction,rankings,optimizationLevel:level}],
    candidateCounts:{savedPlans:s.totalBasePlans,orderedPlans:s.totalBasePlans,sampledOrderedPlans:s.totalBasePlans,
      simulatedPlans:s.testedPlans,resolvedPlans:s.resolvedPlans,discardedPlans:s.discardedPlans,blockedPlans:0,reusedPairs:0,finalOrders:s.rankingReviewed},
    searchDiagnostics:{learningBatches:s.done,trainingMilliseconds:0,historicalTrainingPairs:0,predictionRMSE:null},
    searchPolicy:{method:'预设白名单缩量 + 无序技能集合 + 首套二分 + 精确粗筛 + 逐级测试 + 独立纪录确认 + 最终全部顺序独立排名',
-     targetRate:run.target,tolerance:.02,retestBand:.05,rankingDistinctSkillSets:true,rankingLimit:5,coarseOneSidedConfidence:.95,familywiseConfidence:null,
+     targetRate:run.target,tolerance:.02,retestBand:.05,rankingDistinctSkillSets:true,rankingLimit:5,rankingMetric:"averageAttemptSeconds",failurePenaltySeconds:120,finalTargetRequired:true,coarseOneSidedConfidence:.95,familywiseConfidence:null,
      confidenceScope:'粗筛置信度仅针对单次判断；结果为有限样本经验搜索',globalOptimalityProven:false,conditionalOptimalityCertified:false,
      monotonicityAssumedForElimination:true,rankingStatisticallyCertified:false,historyUsedForCertification:false,
      levelBounds:{minimum:run.minimum,maximum:run.maximum}},

@@ -49,3 +49,17 @@ export function compareSimulationResults(left, right) {
     (left?.averageClearSeconds || Infinity) - (right?.averageClearSeconds || Infinity)
   );
 }
+
+// Failed attempts receive the full room limit, regardless of death time.
+export function averageAttemptSeconds(result, limit=120) {
+ const n=Number(result?.trials),wins=Number(result?.successes),seconds=Number(result?.successfulSpentSeconds);
+ return n>0 && Number.isFinite(seconds) ? (seconds+(n-wins)*limit)/n : Infinity;
+}
+export function compareAverageTime(a,b) {
+ return averageAttemptSeconds(a.result)-averageAttemptSeconds(b.result)
+   || b.result.successes/b.result.trials-a.result.successes/a.result.trials
+   || String(a.plan.key).localeCompare(String(b.plan.key));
+}
+export function meetsFinalTarget(result,target) {
+ return result?.trials>0 && result.successes>=target*result.trials-1e-9;
+}
