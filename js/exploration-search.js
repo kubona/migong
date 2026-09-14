@@ -13,18 +13,22 @@ const compact=plan=>({key:unorderedPlanKey(plan),sourcePreset:plan.sourcePreset,
 const clean=r=>{const {debug,combatStats,attackSummary,damageSummary,...v}=r;return v;};
 export async function searchExploration(o){
  const store=o.runStorage,root=`explore/${o.monsterHrid}`,key=s=>store.key(`${root}/${s}`);
- const min=o.minMonsterLevel,max=o.maxMonsterLevel,target=o.targetRate;
- if(!Number.isInteger(min)||!Number.isInteger(max)||min<20||max<min||!Number.isFinite(target)||target<=0||target>1||
+ const min=o.minMonsterLevel,max=o.maxMonsterLevel,target=o.targetRate,attemptLimit=o.attemptLimit??2;
+ if(!Number.isInteger(attemptLimit)||attemptLimit<1||attemptLimit>10||!Number.isInteger(min)||!Number.isInteger(max)||min<20||max<min||!Number.isFinite(target)||target<=0||target>1||
   ![o.testTrials,o.reviewTrials,o.rankingTrials].every(n=>Number.isInteger(n)&&n>0))throw Error('模拟设置无效');
  const completed=await store.get(key('output'));
- if(completed?.complete){o.onProgress?.({phase:'complete',done:completed.reviewed,total:completed.reviewed});return completed;}
+ if(completed?.complete){o.onProgress?.({trials:completed.audit?.trials||0,tasks:[],phase:'complete',done:completed.reviewed,total:completed.reviewed});return completed;}
  const guard=async()=>{if(o.signal?.aborted)throw new DOMException('模拟已停止','AbortError');await o.pauseController?.waitIfPaused(o.signal);if(o.signal?.aborted)throw new DOMException('模拟已停止','AbortError');};
- const emit=(phase,done,total,extra={})=>o.onProgress?.({phase,done,total,...extra});
+ let phaseState={phase:'index',done:0,total:0},totalTrials=(await store.get(key('audit')))?.trials||0;
+ const liveTasks=new Map();
+ const emit=(phase,done,total,extra={})=>{phaseState={phase,done,total};o.onProgress?.({...phaseState,trials:totalTrials,tasks:[...liveTasks.values()],...extra});};
+ const activity=()=>emit(phaseState.phase,phaseState.done,phaseState.total);
  let active=0;
  async function reserve(n){return store.serial(async()=>{const offset=await store.get(store.key('seed'))||0;if(offset+n>=2**32)throw Error('随机样本序列已用尽');await store.put(store.key('seed'),offset+n);return offset;});}
  async function evaluate(plan,level,trials,id,stage){
   const rowKey=key(`samples/${id}`);let row=await store.get(rowKey)||{monsterHrid:o.monsterHrid,stage,level,result:null,pending:null};
-  while((row.result?.trials||0)<trials){
+  liveTasks.set(id,{id,stage,level,done:row.result?.trials||0,total:trials});activity();
+  try { while((row.result?.trials||0)<trials){
    await guard();
    if(!row.pending){const n=Math.min(1000,trials-(row.result?.trials||0));row.pending={trials:n,offset:await reserve(n)};await store.put(rowKey,row);}
    const task=row.pending,cacheKey=store.key(`cache/${task.offset}`);let result=await store.get(cacheKey);
@@ -35,12 +39,14 @@ export async function searchExploration(o){
     if(result.trials!==task.trials||![result.successes,result.failedByDeath,result.failedByTimeout].every(n=>Number.isInteger(n)&&n>=0)||result.successes+result.failedByDeath+result.failedByTimeout!==result.trials||
      !Number.isFinite(result.successfulSpentSeconds)||result.successfulSpentSeconds<0||result.successfulSpentSeconds>120*result.successes+1e-6)throw Error('战斗统计不完整');
     await store.serial(async()=>{const stats=await store.get(key('audit'))||{batches:0,trials:0};stats.batches++;stats.trials+=result.trials;
-     await store.batch([[cacheKey,result],[key('audit'),stats]]);});
+     await store.batch([[cacheKey,result],[key('audit'),stats]]);totalTrials=stats.trials;});
    }
    row.result=clean(row.result?mergeRoomResults([row.result,result]):result);row.pending=null;
    await store.mutate([[rowKey,row]],[cacheKey]);
+   liveTasks.set(id,{id,stage,level,done:row.result.trials,total:trials});activity();
   }
   return row.result;
+  } finally {liveTasks.delete(id);activity();}
  }
  async function mapStream(source,fn){
   const iterator=source[Symbol.asyncIterator]?.()||source[Symbol.iterator]();let tail=Promise.resolve(),failure;
@@ -74,7 +80,7 @@ export async function searchExploration(o){
    if(needsBoundaryRetest(result,target)){
     const extra=await evaluate(c.plan,level,o.reviewTrials,`${id}-extra`,'boundary');result=clean(mergeRoomResults([result,extra]));
    }
-   const point={level,result,metrics:roomMetrics(result)};checked.set(level,point);return point;
+   const point={level,result,metrics:roomMetrics(result,attemptLimit)};checked.set(level,point);return point;
   };
   const coarse=await evaluate(c.plan,min,o.testTrials,`c${c.index}-screen`,'screen');
   if(coarseRejected(coarse.successes,coarse.trials,target)){c.reason='最低设置等级粗筛未通过';c.highest=null;c.points=[];}
@@ -107,12 +113,13 @@ export async function searchExploration(o){
  emit('review',0,total);
  await mapStream(finalTasks(),async task=>{
   const result=await evaluate(task.plan,task.level,o.rankingTrials,`final-${task.candidate}-${task.order}-${task.level}`,'review');
-  const entry={...task,result,metrics:roomMetrics(result)};
+  const entry={...task,result,metrics:roomMetrics(result,attemptLimit)};
   if(meetsFinalTarget(result,target))retainFrontier(finalFrontier,entry);
   reviewed++;emit('review',reviewed,total);
  });
+ await guard();
  const output={monsterHrid:o.monsterHrid,frontier:finalFrontier,totalCandidates:manifest.total,reviewed,
-  levelBounds:{minimum:min,maximum:max},singleTarget:target,roomTarget:1-(1-target)**2,attemptLimit:2,
+  levelBounds:{minimum:min,maximum:max},singleTarget:target,roomTarget:1-(1-target)**attemptLimit,attemptLimit,
   checkpointLevels:shortlist.levels,complete:true,audit:await store.get(key('audit'))};
  await store.put(key('output'),output);emit('complete',total,total);return output;
 }

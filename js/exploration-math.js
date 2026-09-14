@@ -1,10 +1,13 @@
 import {averageAttemptSeconds} from './statistics.js';
 
-export function roomMetrics(result){
+export function roomMetrics(result,attemptLimit=2){
+  if(!Number.isInteger(attemptLimit)||attemptLimit<1||attemptLimit>10)throw Error('尝试次数须为1～10次');
   const p=result.trials>0?result.successes/result.trials:0;
   const attempt=averageAttemptSeconds(result);
-  return {singleWinRate:p,roomPassRate:1-(1-p)**2,averageAttemptSeconds:attempt,
-    averageRoomSeconds:attempt*(2-p),expectedAttempts:2-p};
+  const roomPassRate=1-(1-p)**attemptLimit;
+  const expectedAttempts=p>0?roomPassRate/p:attemptLimit;
+  return {singleWinRate:p,roomPassRate,averageAttemptSeconds:attempt,
+    averageRoomSeconds:attempt*expectedAttempts,expectedAttempts};
 }
 export function checkpoints(min,max){
   const points=new Set([min,max]);
