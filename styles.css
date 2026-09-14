@@ -144,3 +144,35 @@ footer p { margin: 12px 0; }
  .loadout { grid-template-columns: 1fr; }
  th,td { white-space: nowrap; padding: 10px; }
 }
+
+/* The same expandable section structure is used throughout configuration. */
+.form-section>.content { padding-top: 16px; }
+#fixed-rules { margin-top: 16px; }
+.fixed-group { padding: 0; }
+.fixed-group>summary { display: flex; align-items: center; padding: 14px 16px; background: var(--section); font-weight: 600; }
+.fixed-group[open]>summary { border-bottom: 1px solid var(--line); }
+.fixed-group>.content { padding: 16px; }
+.fixed-group .grid { margin-bottom: 14px; }
+.preset-equipment-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 14px; }
+.preset-item { display: grid; grid-template-columns: minmax(0,1fr) 84px; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }
+.skill-batch { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.skill-batch>label { max-width: 130px; }
+.skill-selection { margin-bottom: 12px; }
+.skill-batch .skill-selection { margin: 0; }
+.skill-level-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(230px,1fr)); gap: 12px; }
+.skill-level-row { display: grid; grid-template-columns: minmax(0,1fr) 72px; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.skill-level-row>label { flex-direction: row; align-items: center; gap: 8px; }
+.buff-groups { display: grid; grid-template-columns: repeat(auto-fit,minmax(310px,1fr)); gap: 16px; align-items: start; }
+.buff-groups>.subsection { border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.buff-groups>.subsection>summary { display: flex; padding: 14px; background: var(--section); align-items: center; }
+.buff-groups>.subsection>.subsection-content { padding: 12px; }
+.buff-items { display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 12px; margin-bottom: 12px; }
+.editor-buff { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+.editor-buff .character-edit-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin: 12px 0; }
+.achievement-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 12px; }
+.achievement-toggle { display: flex; flex-direction: row; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 7px; }
+.achievement-toggle>span { display: flex; flex-direction: column; gap: 6px; }
+.achievement-toggle strong { font-weight: 600; }
+.achievement-toggle>span>span { color: var(--muted); font-size: 13px; }
+input[readonly] { background: var(--section); color: var(--ink-soft); }
+@media(max-width:650px) { .preset-equipment-grid,.buff-groups,.buff-items { grid-template-columns: 1fr; } }

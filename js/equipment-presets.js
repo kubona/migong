@@ -243,7 +243,24 @@ export function presetRotationPool(character, catalog, baseline, selectedTypes) 
   return equipmentPools;
 }
 
+export function presetEquipmentDraft(character,catalog) {
+ if(!catalog)return {};
+ return Object.fromEntries(Object.entries(SYSTEM_EQUIPMENT_PRESETS).map(([key,preset])=>[key,
+  Object.fromEntries(Object.entries(preset).map(([type,family])=>{
+   const item=character.presetEquipment?.[key]?.[type]||strongestOwnedFamily(character,catalog,type,family);
+   return [type,{hrid:item?.hrid||'',enhancementLevel:item?.enhancementLevel||0}];
+  }))]));
+}
 function systemBaseline(character, catalog, key) {
+ if(character.presetEquipment?.[key]) {
+  const raw=character.presetEquipment[key],equipment={};
+  for(const type of Object.keys(SYSTEM_EQUIPMENT_PRESETS[key])) {
+   const v=raw[type],item=catalog.itemDetailMap[v?.hrid];
+   if(!item||item.equipmentDetail?.type!==type)throw Error(`${PRESET_LABELS[key]}预设有未配置的装备，请完善角色数据`);
+   equipment[type]=equipmentEntry({itemHrid:v.hrid,enhancementLevel:v.enhancementLevel,count:1},item,catalog);
+  }
+  return {sourcePreset:PRESET_LABELS[key],sourcePresetId:`system:${key}`,equipment};
+ }
   const preset = SYSTEM_EQUIPMENT_PRESETS[key];
   const equipment = {};
   const overrides = character.equipmentOverrides || {};

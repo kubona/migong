@@ -30,12 +30,13 @@ $('monster-options').addEventListener('change',updateScope);document.querySelect
 function renderRules(){
  if(!state.character||!state.catalog)return;
  const choices=aura=>learnedFixedAbilityChoices(state.catalog,state.character,aura).map(e=>e.hrid);
- const select=(category,index,value,aura)=>`<select data-category="${category}" data-index="${index}"><option value="">不固定</option>${choices(aura).map(id=>`<option value="${id}" ${id===value?'selected':''}>${esc(name(id))}</option>`).join('')}</select>`;
- $('fixed-rules').innerHTML=Object.entries({magic:'魔法',physical:'物理',mimic:'宝箱怪'}).map(([category,label])=>{const r=state.rules[category];return `<div class="fixed-group"><h3>${label}</h3><div class="grid"><label>特殊技能${select(category,-1,r.aura,true)}</label>${r.requiredActives.map((id,i)=>`<label>主动技能${select(category,i,id,false)}<button data-remove="${category}:${i}">删除</button></label>`).join('')}</div>${r.requiredActives.length<4?`<button data-add="${category}">添加主动技能</button>`:''}</div>`;}).join('');
+ const opened=new Set([...$('fixed-rules').querySelectorAll('details[open]')].map(e=>e.dataset.fixedGroup));
+ const select=(category,index,value,aura)=>{const ids=choices(aura);if(value&&!ids.includes(value))ids.push(value);return `<select data-category="${category}" data-index="${index}"><option value="">不固定</option>${ids.map(id=>`<option value="${id}" ${id===value?'selected':''}>${esc(name(id))}</option>`).join('')}</select>`;};
+ $('fixed-rules').innerHTML=Object.entries({magic:'魔法',physical:'物理',mimic:'宝箱怪'}).map(([category,label])=>{const r=state.rules[category];return `<details class="fixed-group" data-fixed-group="${category}" ${opened.has(category)?'open':''}><summary>${label}</summary><div class="content"><div class="grid">${category==='magic'?'<label>第四号位<input value="对应元素的零冷却技能" readonly></label>':''}<label>特殊技能${select(category,-1,r.aura,true)}</label>${r.requiredActives.map((id,i)=>`<label>固定主动技能${select(category,i,id,false)}<button data-remove="${category}:${i}">删除</button></label>`).join('')}</div>${r.requiredActives.length<(category==='magic'?3:4)?`<button data-add="${category}">添加主动技能</button>`:''}</div></details>`;}).join('');
 }
 $('fixed-rules').addEventListener('change',e=>{if(!e.target.dataset.category)return;const r=state.rules[e.target.dataset.category],i=Number(e.target.dataset.index);if(i<0)r.aura=e.target.value;else r.requiredActives[i]=e.target.value;});
 $('fixed-rules').addEventListener('click',e=>{if(e.target.dataset.add){state.rules[e.target.dataset.add].requiredActives.push('');renderRules();}if(e.target.dataset.remove){const[c,i]=e.target.dataset.remove.split(':');state.rules[c].requiredActives.splice(Number(i),1);renderRules();}});
-const fields=['minimum','maximum','target','resource','screen-trials','level-trials','final-trials','attempts','preset'];
+const fields=['minimum','maximum','target','resource','screen-trials','level-trials','final-trials','attempts'];
 function settings(){
  for(const id of fields){const e=$(id);if(!e.checkValidity()||e.value==='')throw Error('请检查模拟设置');}
  if(Number($('minimum').value)>Number($('maximum').value))throw Error('最低等级不能高于最高等级');
@@ -44,7 +45,7 @@ function settings(){
  directions:Object.fromEntries([...document.querySelectorAll('[data-direction]')].map(e=>[e.dataset.direction,e.value])),aura:$('aura').checked,active:$('active').checked,rules:sanitizeFixedAbilityRules(state.rules,state.catalog,state.character),characterEditor:editor.snapshot()};
 }
 function restore(s){for(const[id,v]of Object.entries(s.fields))if($(id))$(id).value=v;$('monster-options').querySelectorAll('input').forEach(e=>e.checked=s.monsters.includes(e.value));$('equipment-options').querySelectorAll('input').forEach(e=>e.checked=s.equipment.includes(e.value));document.querySelectorAll('[data-direction]').forEach(e=>e.value=s.directions[e.dataset.direction]);$('aura').checked=s.aura;$('active').checked=s.active;state.rules=structuredClone(s.rules);editor.restore(s.characterEditor);renderRules();updateScope();}
-function options(s,id){return {character:state.character,catalog:state.catalog,monsterHrid:id,simulationDirection:s.directions[id],equipmentPresetSource:s.fields.preset,
+function options(s,id){return {character:state.character,catalog:state.catalog,monsterHrid:id,simulationDirection:s.directions[id],equipmentPresetSource:'system',
  selectedEquipmentTypes:s.equipment,optimizableEquipmentTypes:s.equipment,optimizeAura:s.aura,optimizeActives:s.active,fixedAbilityRules:s.rules,minimumEquipmentLevel:80,
  minMonsterLevel:Number(s.fields.minimum),maxMonsterLevel:Number(s.fields.maximum),targetRate:Number(s.fields.target)/100,testTrials:Number(s.fields['screen-trials']),reviewTrials:Number(s.fields['level-trials']),rankingTrials:Number(s.fields['final-trials']),attemptLimit:Number(s.fields.attempts)};}
 function download(data,label){const url=URL.createObjectURL(new Blob([JSON.stringify(data)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=label;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
@@ -67,10 +68,10 @@ async function run(resume){
  if(state.busy)return;editor.apply();state.busy=true;state.live=null;$('run-state').textContent='准备中';$('run-phase').textContent='初始化';status('正在准备模拟');$('configuration').inert=true;$('settings-panel').inert=true;ready();let store,s;
  try{
   store=await RunStorage.open();
-  if(resume){const saved=await store.get('latest');if(!saved||saved.settings?.version!==53)throw Error('没有可恢复的053任务');if(await fingerprint(state.source)!==saved.settings.sourceFingerprint)throw Error('请导入原始角色数据');restore(saved.settings);}
+  if(resume){const saved=await store.get('latest');if(!saved||saved.settings?.version!==54)throw Error('没有可恢复的054任务');if(await fingerprint(state.source)!==saved.settings.sourceFingerprint)throw Error('请导入原始角色数据');restore(saved.settings);}
   editor.apply();s=settings();if(!s.monsters.length)throw Error('请选择怪物');
   const coverage=compareCharacterToCatalog(state.character,state.catalog);if(coverage.warnings.length)$('data-status').textContent=coverage.warnings.join('；');
-  s.version=53;s.sourceFingerprint=await fingerprint(state.source);const workers=recommendedWorkerCount(navigator.hardwareConcurrency,s.fields.resource);
+  s.version=54;s.sourceFingerprint=await fingerprint(state.source);const workers=recommendedWorkerCount(navigator.hardwareConcurrency,s.fields.resource);
   const identity=await fingerprint({character:state.character,catalog:state.catalog,settings:s,workers,runtime:await runtimeFingerprint()});
   const meta=await store.begin(identity,s,resume);state.store?.db.close();state.store=store;state.busy=true;state.controller=new AbortController();state.pause=createPauseController();resetResults();
   $('configuration').inert=true;$('settings-panel').inert=true;ready();$('pause').hidden=false;$('stop').hidden=false;$('progress').hidden=false;$('progress').value=0;
@@ -106,11 +107,11 @@ function renderResults(){
 $('result-tabs').onclick=e=>{if(e.target.dataset.result!==undefined){state.selected=Number(e.target.dataset.result);state.point=0;renderResults();}};
 $('result-body').onclick=e=>{const row=e.target.closest('[data-point]');if(row){state.point=Number(row.dataset.point);renderResults();}};
 $('result-body').onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target.dataset.point!==undefined){e.preventDefault();state.point=Number(e.target.dataset.point);renderResults();}};
-$('export').onclick=()=>download({version:53,failurePenaltySeconds:120,results:state.results},'迷宫模拟结果-v053.json');
+$('export').onclick=()=>download({version:54,failurePenaltySeconds:120,results:state.results},'迷宫模拟结果-v054.json');
 $('audit').onclick=guarded(async()=>{
- if(!state.store)return;const meta=await state.store.get(state.store.key('meta'));const parts=[];let buffer=`{"version":53,"attemptLimit":${Number(meta.settings.fields.attempts)},"rows":[`,comma='';
+ if(!state.store)return;const meta=await state.store.get(state.store.key('meta'));const parts=[];let buffer=`{"version":54,"attemptLimit":${Number(meta.settings.fields.attempts)},"rows":[`,comma='';
  for await(const [key,value]of state.store.entries(state.store.key('explore/'))){buffer+=comma+JSON.stringify({key:key.slice(state.store.id.length+1),value});comma=',';if(buffer.length>=262144){parts.push(new Blob([buffer]));buffer='';}}
- parts.push(buffer+']}');const url=URL.createObjectURL(new Blob(parts,{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='迷宫模拟明细-v053.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ parts.push(buffer+']}');const url=URL.createObjectURL(new Blob(parts,{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='迷宫模拟明细-v054.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
 $('clear').onclick=guarded(async()=>{if(state.busy)throw Error('请先停止模拟');const store=await RunStorage.open();try{await store.clearAll();}finally{store.db.close();}resetResults();status('本机任务已清除');});
 if(['127.0.0.1','localhost'].includes(location.hostname))setInterval(async()=>{if(state.busy||editor.hasEdits())return;try{const response=await fetch(`/api/data?since=${state.bridgeRevision}`,{cache:'no-store'});if(!response.ok)return;const data=await response.json();if(data.unchanged)return;state.bridgeRevision=data.revision;if(data.client)loadCatalog(data.client);if(data.character)loadCharacter(data.character);}catch{}},2000);

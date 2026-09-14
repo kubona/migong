@@ -2,9 +2,9 @@ import { classifyAbility } from "./classifier.js";
 import { blocksLevelOneActive } from "./ability-selection-rules.js";
 
 export const DEFAULT_FIXED_ABILITY_RULES = Object.freeze({
-  magic: Object.freeze({ aura: "", requiredActives: Object.freeze([]) }),
-  physical: Object.freeze({ aura: "", requiredActives: Object.freeze([]) }),
-  mimic: Object.freeze({ aura: "", requiredActives: Object.freeze([]) }),
+  magic: Object.freeze({ aura: "", requiredActives: Object.freeze(["/abilities/elemental_affinity"]) }),
+  physical: Object.freeze({ aura: "", requiredActives: Object.freeze(["/abilities/frenzy","/abilities/berserk"]) }),
+  mimic: Object.freeze({ aura: "", requiredActives: Object.freeze(["/abilities/spike_shell","/abilities/retribution"]) }),
 });
 export const NEVER_SELECTABLE_ABILITY_HRIDS = new Set([
   "/abilities/taunt", "/abilities/provoke", "/abilities/minor_heal",
@@ -60,7 +60,7 @@ export function sanitizeFixedAbilityRules(rules, catalog, character) {
   const activeHrids = new Set(learnedFixedAbilityChoices(catalog, character, false).map((entry) => entry.hrid));
   for (const category of Object.values(normalized)) {
     if (category.aura && !auraHrids.has(category.aura)) category.aura = "";
-    category.requiredActives = category.requiredActives.filter((hrid) => activeHrids.has(hrid));
+    category.requiredActives = category.requiredActives.filter((hrid) => catalog.abilityDetailMap[hrid]&&!NEVER_SELECTABLE_ABILITY_HRIDS.has(hrid));
   }
   return normalized;
 }

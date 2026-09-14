@@ -381,10 +381,10 @@ function fixedPresence(pool, direction, monsterHrid, configuredRules) {
   const category = directionCategory(direction, monsterHrid);
   const rule = normalizeFixedAbilityRules(configuredRules)[category];
   const aura = rule.aura ? pool.allAuraAbilities.find((entry) => entry.hrid === rule.aura) : null;
-  if (rule.aura && !aura) throw new Error(`固定特殊技能 ${rule.aura} 未学习或不存在`);
+  if (rule.aura && !aura) throw new Error(`固定特殊技能 ${chineseName(rule.aura,"未命名技能")} 未学习或不存在`);
   const requiredActives = rule.requiredActives.map((hrid) => {
     const entry = pool.allActiveAbilities.find((ability) => ability.hrid === hrid);
-    if (!entry) throw new Error(`固定主动技能 ${hrid} 未学习或不存在`);
+    if (!entry) throw new Error(`固定主动技能 ${chineseName(hrid,"未命名技能")} 未学习或不存在`);
     return entry;
   });
   const zeroCooldown = category === "magic" ? pool.allActiveAbilities.find((entry) => (
